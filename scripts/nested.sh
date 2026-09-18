@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Drive a throwaway nested GNOME Shell for testing Gnomeflix.
+# Drive a throwaway nested GNOME Shell for testing Wallpaper Engine.
 #
 #   ./scripts/nested.sh start [WxH]   start a nested shell (default 1600x900) with
-#                                     Gnomeflix ACTIVE, and open a live mirror window
+#                                     Wallpaper Engine ACTIVE, and open a live mirror window
 #                                     of it on the real desktop
 #   ./scripts/nested.sh start --headless [WxH]
 #                                     no mirror window; screenshots are the only view
@@ -19,7 +19,7 @@
 #   ./scripts/nested.sh move X Y      move the pointer there (hover) without clicking
 #   ./scripts/nested.sh key KEYSYM    press a key or chord (Escape, Super+Page_Down, ...)
 #   ./scripts/nested.sh overview on|off   show/hide the Activities overview
-#   ./scripts/nested.sh reload        disable/enable Gnomeflix inside the nested shell
+#   ./scripts/nested.sh reload        disable/enable Wallpaper Engine inside the nested shell
 #   ./scripts/nested.sh mirror on|off open/close the live mirror window
 #   ./scripts/nested.sh run CMD...    run CMD against the nested shell's session bus
 #   ./scripts/nested.sh logs [N] [--all]
@@ -38,7 +38,7 @@
 #
 # Nothing is left behind on the desktop: the mirror closes when the shell stops or
 # dies, and a shell started from a Claude Code session stops itself after
-# GNOMEFLIX_NESTED_IDLE seconds (default 600, 0 = never) without a command here,
+# WALLPAPER_NESTED_IDLE seconds (default 600, 0 = never) without a command here,
 # and when that session ends (the SessionEnd hook runs 'session-end').
 #
 set -euo pipefail
@@ -63,7 +63,7 @@ GUARD_OWNED_FILE="$RUN_DIR/owns-crash-guard"
 # runtime dir, so it creates the REAL session's copy -- and a stop inside those
 # 60 s leaves it behind, arming that for the user's next real crash.
 CRASH_GUARD="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gnome-shell-disable-extensions"
-IDLE_SECS="${GNOMEFLIX_NESTED_IDLE:-600}"
+IDLE_SECS="${WALLPAPER_NESTED_IDLE:-600}"
 # The real session's display and bus, captured before nested_env overrides them:
 # the mirror window has to open on the desktop the user is looking at.
 HOST_WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
@@ -210,8 +210,8 @@ cmd_start() {
     # enabled is not listed: it would sit at INITIALIZED doing nothing.
     if nested_env gsettings get org.gnome.shell enabled-extensions 2>/dev/null | grep -qF "'$UUID'"; then
         wait_state ACTIVE \
-            || die "Gnomeflix is $(nested_state) after startup -- check './scripts/nested.sh logs' for a JS error."
-        ok "Gnomeflix ACTIVE."
+            || die "Wallpaper Engine is $(nested_state) after startup -- check './scripts/nested.sh logs' for a JS error."
+        ok "Wallpaper Engine ACTIVE."
     else
         enable_in_nested
     fi
@@ -226,7 +226,7 @@ enable_in_nested() {
     nested_env gnome-extensions enable "$UUID" 2>/dev/null || die "Could not enable $UUID in the nested shell."
     wait_state ACTIVE \
         || die "Enabled but $(nested_state) -- check './scripts/nested.sh logs' for a JS error."
-    ok "Gnomeflix ACTIVE."
+    ok "Wallpaper Engine ACTIVE."
 }
 
 # Stops the nested shell after IDLE_SECS without a command, and cleans up (the
@@ -393,7 +393,7 @@ cmd_run() {
 
 # The shell's log is mostly the bus daemon announcing service activations and the
 # portal complaining about services a throwaway session does not have. None of it
-# is about Gnomeflix, and it buries the lines that are.
+# is about Wallpaper Engine, and it buries the lines that are.
 filtered_log() {
     grep -Ev "^\s*$|Activating (via systemd: )?service name=|Successfully activated service|Activated service 'org.freedesktop.systemd1' failed|RealtimeKit|AT-SPI|atk-bridge|discover_other_daemon|gnome-shell-calendar-server|libecal|Error loading calendars|No entry for geolocation" \
         "$LOG_FILE" | tail -n "$1"

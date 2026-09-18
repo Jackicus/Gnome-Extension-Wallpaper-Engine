@@ -1,4 +1,4 @@
-# GNOME Wallpaper Engine
+# Wallpaper Engine
 
 An animated, stackable background engine for GNOME Shell (Shell versions 45–50).
 

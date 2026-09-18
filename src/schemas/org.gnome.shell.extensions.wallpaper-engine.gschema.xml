@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<schemalist gettext-domain="gnome-wallpaper-engine">
+<schemalist gettext-domain="wallpaper-engine">
   <schema id="org.gnome.shell.extensions.wallpaper-engine" path="/org/gnome/shell/extensions/wallpaper-engine/">
     <key name="enabled-effects" type="as">
       <default>['wave', 'sparkles']</default>
