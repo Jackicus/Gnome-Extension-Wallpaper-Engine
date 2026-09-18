@@ -2,7 +2,6 @@ import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
 import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
 
 import { EFFECTS, parseEffectIds } from './lib/catalog.js';
 import { PALETTE_NAMES } from './lib/palettes.js';
@@ -13,11 +12,93 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         window.set_default_size(680, 640);
         window.set_search_enabled(true);
 
-        const state = { window, settings };
+        // Rows that mirror a key register here, and the whole lot is dropped when
+        // the window closes. Connecting per row and never disconnecting left the
+        // settings object holding callbacks that touch destroyed widgets.
+        const watchers = [];
+        const handlerId = settings.connect('changed', (_s, key) => {
+            for (const watcher of watchers) watcher(key);
+        });
+        window.connect('close-request', () => settings.disconnect(handlerId));
+
+        const state = { window, settings, watch: fn => watchers.push(fn) };
 
         window.add(this._patternsPage(state));
         window.add(this._backgroundPage(state));
         window.add(this._performancePage(state));
+    }
+
+    /**
+     * Writes a widget's value back to a key, and follows the key when it is
+     * changed elsewhere -- without the write-back firing again on the way in.
+     */
+    _bind(state, { key, read, write, apply }) {
+        let syncing = false;
+
+        const push = () => {
+            if (syncing) return;
+            write(state.settings, key);
+        };
+
+        state.watch(changed => {
+            if (changed !== key) return;
+            syncing = true;
+            try {
+                apply(read(state.settings, key));
+            } finally {
+                syncing = false;
+            }
+        });
+
+        return push;
+    }
+
+    /**
+     * A combo row backed by a key, from a list of { value, label } choices.
+     *
+     * Both directions are guarded. Following the key would otherwise fire the
+     * row's own notify::selected and write straight back, and mid-update
+     * get_selected() can report Gtk's invalid position -- which read as "no
+     * choice", fell through to the first one, and quietly rewrote the key to
+     * something the user never picked.
+     */
+    _comboRow(state, { key, choices, read, write, props }) {
+        const { settings } = state;
+
+        const model = new Gtk.StringList();
+        for (const choice of choices) model.append(choice.label);
+
+        const indexOf = value => {
+            const index = choices.findIndex(c => c.value === value);
+            return index < 0 ? 0 : index;
+        };
+
+        const row = new Adw.ComboRow({
+            ...props,
+            model,
+            selected: indexOf(read(settings, key)),
+        });
+
+        let syncing = false;
+
+        row.connect('notify::selected', () => {
+            if (syncing) return;
+            const choice = choices[row.get_selected()];
+            if (!choice) return;
+            write(settings, key, choice.value);
+        });
+
+        state.watch(changed => {
+            if (changed !== key) return;
+            syncing = true;
+            try {
+                row.set_selected(indexOf(read(settings, key)));
+            } finally {
+                syncing = false;
+            }
+        });
+
+        return row;
     }
 
     // ------------------------------------------------------------------
@@ -37,7 +118,9 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
         page.add(group);
 
-        let enabledSet = new Set(parseEffectIds(settings.get_strv('enabled-effects')));
+        const enabledSet = new Set(parseEffectIds(settings.get_strv('enabled-effects')));
+        const rows = new Map();
+        let syncing = false;
 
         for (const effect of EFFECTS) {
             const row = new Adw.SwitchRow({
@@ -47,25 +130,28 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
             });
 
             row.connect('notify::active', () => {
+                if (syncing) return;
                 const current = new Set(parseEffectIds(settings.get_strv('enabled-effects')));
-                if (row.active) {
-                    current.add(effect.id);
-                } else {
-                    current.delete(effect.id);
-                }
-                settings.set_strv('enabled-effects', [...current]);
+                if (row.active) current.add(effect.id);
+                else current.delete(effect.id);
+                // Written in catalog order, which is the order they are drawn in.
+                settings.set_strv('enabled-effects', EFFECTS.filter(e => current.has(e.id)).map(e => e.id));
             });
 
-            // Update row if settings change externally
-            settings.connect('changed::enabled-effects', () => {
-                const updated = new Set(parseEffectIds(settings.get_strv('enabled-effects')));
-                if (row.active !== updated.has(effect.id)) {
-                    row.active = updated.has(effect.id);
-                }
-            });
-
+            rows.set(effect.id, row);
             group.add(row);
         }
+
+        state.watch(key => {
+            if (key !== 'enabled-effects') return;
+            const updated = new Set(parseEffectIds(settings.get_strv('enabled-effects')));
+            syncing = true;
+            try {
+                for (const [id, row] of rows) row.active = updated.has(id);
+            } finally {
+                syncing = false;
+            }
+        });
 
         // Group: Tuning
         const tuningGroup = new Adw.PreferencesGroup({
@@ -85,9 +171,13 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
             }),
             digits: 2,
         });
-        speedRow.connect('changed', () => {
-            settings.set_double('speed', speedRow.get_value());
+        const pushSpeed = this._bind(state, {
+            key: 'speed',
+            read: (s2, k) => s2.get_double(k),
+            write: (s2, k) => s2.set_double(k, speedRow.get_value()),
+            apply: value => speedRow.set_value(value),
         });
+        speedRow.connect('notify::value', pushSpeed);
         tuningGroup.add(speedRow);
 
         const opacityRow = new Adw.SpinRow({
@@ -100,9 +190,13 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
                 value: Math.round(settings.get_double('opacity') * 100),
             }),
         });
-        opacityRow.connect('changed', () => {
-            settings.set_double('opacity', opacityRow.get_value() / 100);
+        const pushOpacity = this._bind(state, {
+            key: 'opacity',
+            read: (s2, k) => s2.get_double(k),
+            write: (s2, k) => s2.set_double(k, opacityRow.get_value() / 100),
+            apply: value => opacityRow.set_value(Math.round(value * 100)),
         });
+        opacityRow.connect('notify::value', pushOpacity);
         tuningGroup.add(opacityRow);
 
         return page;
@@ -126,51 +220,35 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
 
         // Background Mode: desktop | color | image
         const modes = [
-            { key: 'desktop', label: 'Desktop Wallpaper (Overlay)', subtitle: 'Draw patterns directly over your current GNOME wallpaper' },
-            { key: 'color', label: 'Color Gradient', subtitle: 'Draw patterns over a styled color palette backdrop' },
-            { key: 'image', label: 'Custom Picture', subtitle: 'Draw patterns over a chosen image file' },
+            { value: 'desktop', label: 'Desktop Wallpaper (Overlay)' },
+            { value: 'color', label: 'Color Gradient' },
+            { value: 'image', label: 'Custom Picture' },
         ];
 
-        const modeModel = new Gtk.StringList();
-        for (const m of modes) modeModel.append(m.label);
-
-        const currentMode = settings.get_string('background-mode') || 'desktop';
-        let initialModeIndex = modes.findIndex(m => m.key === currentMode);
-        if (initialModeIndex < 0) initialModeIndex = 0;
-
-        const modeRow = new Adw.ComboRow({
-            title: 'Background Mode',
-            model: modeModel,
-            selected: initialModeIndex,
+        const modeRow = this._comboRow(state, {
+            key: 'background-mode',
+            choices: modes,
+            read: (s2, k) => s2.get_string(k) || 'desktop',
+            write: (s2, k, value) => s2.set_string(k, value),
+            props: { title: 'Background Mode' },
         });
         baseGroup.add(modeRow);
 
-        // Color Palette Selector
-        const paletteModel = new Gtk.StringList();
-        for (const name of PALETTE_NAMES) paletteModel.append(name);
-
-        const currentPalette = settings.get_string('color-palette') || 'Classic Blue';
-        let initialPaletteIndex = PALETTE_NAMES.indexOf(currentPalette);
-        if (initialPaletteIndex < 0) initialPaletteIndex = 0;
-
-        const paletteRow = new Adw.ComboRow({
-            title: 'Color Palette',
-            subtitle: 'Color gradient backdrop',
-            model: paletteModel,
-            selected: initialPaletteIndex,
-            sensitive: currentMode === 'color',
-        });
-        paletteRow.connect('notify::selected', () => {
-            const chosen = PALETTE_NAMES[paletteRow.get_selected()];
-            if (chosen) settings.set_string('color-palette', chosen);
+        const paletteRow = this._comboRow(state, {
+            key: 'color-palette',
+            choices: PALETTE_NAMES.map(name => ({ value: name, label: name })),
+            read: (s2, k) => s2.get_string(k) || 'Classic Blue',
+            write: (s2, k, value) => s2.set_string(k, value),
+            props: { title: 'Color Palette', subtitle: 'Color gradient backdrop' },
         });
         baseGroup.add(paletteRow);
 
         // Custom Picture Selector
+        const describeImage = path => path || 'No picture selected';
         const imageRow = new Adw.ActionRow({
             title: 'Custom Picture',
-            subtitle: settings.get_string('custom-image') || 'No picture selected',
-            sensitive: currentMode === 'image',
+            subtitle: describeImage(settings.get_string('custom-image')),
+            sensitive: false, // applyMode() below decides, from the key
         });
 
         const browseBtn = new Gtk.Button({
@@ -179,44 +257,61 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
 
         browseBtn.connect('clicked', () => {
-            const chooser = new Gtk.FileChooserNative({
-                title: 'Select Wallpaper Image',
-                transient_for: window,
-                action: Gtk.FileChooserAction.OPEN,
-                accept_label: 'Select',
-                cancel_label: 'Cancel',
-            });
-
-            const filter = new Gtk.FileFilter();
-            filter.set_name('Images (*.png, *.jpg, *.jpeg, *.webp)');
+            const filter = new Gtk.FileFilter({ name: 'Images' });
             filter.add_mime_type('image/png');
             filter.add_mime_type('image/jpeg');
             filter.add_mime_type('image/webp');
-            chooser.add_filter(filter);
 
-            chooser.connect('response', (dialog, response_id) => {
-                if (response_id === Gtk.ResponseType.ACCEPT) {
-                    const file = chooser.get_file();
-                    if (file) {
-                        const path = file.get_path();
-                        settings.set_string('custom-image', path);
-                        imageRow.set_subtitle(path);
-                    }
-                }
-                chooser.destroy();
+            const filters = new Gio.ListStore({ item_type: Gtk.FileFilter });
+            filters.append(filter);
+
+            const dialog = new Gtk.FileDialog({
+                title: 'Select Wallpaper Image',
+                filters,
+                default_filter: filter,
+                modal: true,
             });
 
-            chooser.show();
+            const current = settings.get_string('custom-image');
+            if (current) dialog.set_initial_file(Gio.File.new_for_path(current));
+
+            dialog.open(window, null, (self, result) => {
+                let file = null;
+                try {
+                    file = self.open_finish(result);
+                } catch (e) {
+                    // Dismissed, or the portal refused -- nothing to report.
+                    return;
+                }
+                const path = file?.get_path();
+                if (path) settings.set_string('custom-image', path);
+            });
         });
         imageRow.add_suffix(browseBtn);
+
+        const clearBtn = new Gtk.Button({
+            icon_name: 'edit-clear-symbolic',
+            tooltip_text: 'Clear the chosen picture',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
+        clearBtn.connect('clicked', () => settings.set_string('custom-image', ''));
+        imageRow.add_suffix(clearBtn);
         baseGroup.add(imageRow);
 
-        // Mode row change handler
-        modeRow.connect('notify::selected', () => {
-            const selectedMode = modes[modeRow.get_selected()]?.key || 'desktop';
-            settings.set_string('background-mode', selectedMode);
-            paletteRow.sensitive = (selectedMode === 'color');
-            imageRow.sensitive = (selectedMode === 'image');
+        // What the base layer needs depends on the mode, and the mode can change
+        // from the row or from outside, so both go through the key.
+        const applyMode = () => {
+            const mode = settings.get_string('background-mode') || 'desktop';
+            paletteRow.sensitive = mode === 'color';
+            imageRow.sensitive = mode === 'image';
+        };
+        applyMode();
+
+        state.watch(key => {
+            if (key === 'background-mode') applyMode();
+            else if (key === 'custom-image')
+                imageRow.set_subtitle(describeImage(settings.get_string('custom-image')));
         });
 
         return page;
@@ -238,51 +333,38 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
         page.add(group);
 
-        // Frame rate
-        const fpsOptions = [
-            { fps: 30, label: '30 FPS (Recommended — smooth & battery efficient)' },
-            { fps: 60, label: '60 FPS (Maximum smoothness)' },
-        ];
-        const fpsModel = new Gtk.StringList();
-        for (const opt of fpsOptions) fpsModel.append(opt.label);
-
-        const currentFps = settings.get_int('target-fps') || 30;
-        const initialFpsIndex = currentFps === 60 ? 1 : 0;
-
-        const fpsRow = new Adw.ComboRow({
-            title: 'Target Frame Rate',
-            model: fpsModel,
-            selected: initialFpsIndex,
-        });
-        fpsRow.connect('notify::selected', () => {
-            const chosen = fpsOptions[fpsRow.get_selected()]?.fps || 30;
-            settings.set_int('target-fps', chosen);
+        const fpsRow = this._comboRow(state, {
+            key: 'target-fps',
+            choices: [
+                { value: 30, label: '30 FPS (Recommended — smooth & battery efficient)' },
+                { value: 60, label: '60 FPS (Maximum smoothness)' },
+            ],
+            read: (s2, k) => s2.get_int(k) || 30,
+            write: (s2, k, value) => s2.set_int(k, value),
+            props: { title: 'Target Frame Rate' },
         });
         group.add(fpsRow);
 
-        // Render resolution
-        const scaleOptions = [
-            { scale: 1.0, label: 'Full — sharpest, most CPU' },
-            { scale: 0.75, label: 'High (Recommended) — barely softer, noticeably cheaper' },
-            { scale: 0.5, label: 'Balanced — half resolution, roughly half the cost' },
-            { scale: 0.35, label: 'Power Saver — softest, cheapest' },
-        ];
-        const scaleModel = new Gtk.StringList();
-        for (const opt of scaleOptions) scaleModel.append(opt.label);
-
-        const currentScale = settings.get_double('render-scale') || 1.0;
-        let initialScaleIndex = scaleOptions.findIndex(o => Math.abs(o.scale - currentScale) < 0.01);
-        if (initialScaleIndex < 0) initialScaleIndex = 1;
-
-        const scaleRow = new Adw.ComboRow({
-            title: 'Render Resolution',
-            subtitle: 'Patterns are drawn at this fraction of the screen and scaled back up by the GPU. The single biggest lever on CPU use — worth lowering on a 4K display.',
-            model: scaleModel,
-            selected: initialScaleIndex,
-        });
-        scaleRow.connect('notify::selected', () => {
-            const chosen = scaleOptions[scaleRow.get_selected()]?.scale || 1.0;
-            settings.set_double('render-scale', chosen);
+        const scaleRow = this._comboRow(state, {
+            key: 'render-scale',
+            choices: [
+                { value: 1.0, label: 'Full — sharpest, most CPU' },
+                { value: 0.75, label: 'High (Recommended) — barely softer, noticeably cheaper' },
+                { value: 0.5, label: 'Balanced — half resolution, roughly half the cost' },
+                { value: 0.35, label: 'Power Saver — softest, cheapest' },
+            ],
+            // Doubles never land exactly on the stored value, so snap to the
+            // nearest choice rather than falling back to the first one.
+            read: (s2, k) => {
+                const value = s2.get_double(k) || 0.75;
+                return [1.0, 0.75, 0.5, 0.35]
+                    .reduce((best, o) => Math.abs(o - value) < Math.abs(best - value) ? o : best);
+            },
+            write: (s2, k, value) => s2.set_double(k, value),
+            props: {
+                title: 'Render Resolution',
+                subtitle: 'Patterns are drawn at this fraction of the screen and scaled back up by the GPU. The single biggest lever on CPU use — worth lowering on a 4K display.',
+            },
         });
         group.add(scaleRow);
 
@@ -295,6 +377,9 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         fullscreenRow.connect('notify::active', () => {
             settings.set_boolean('pause-on-fullscreen', fullscreenRow.active);
         });
+        state.watch(k => {
+            if (k === 'pause-on-fullscreen') fullscreenRow.active = settings.get_boolean('pause-on-fullscreen');
+        });
         group.add(fullscreenRow);
 
         // Pause on battery
@@ -305,6 +390,9 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
         batteryRow.connect('notify::active', () => {
             settings.set_boolean('pause-on-battery', batteryRow.active);
+        });
+        state.watch(k => {
+            if (k === 'pause-on-battery') batteryRow.active = settings.get_boolean('pause-on-battery');
         });
         group.add(batteryRow);
 
