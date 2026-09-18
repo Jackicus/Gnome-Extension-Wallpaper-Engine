@@ -1,0 +1,7 @@
+src/schemas/gschemas.compiled
+dist/
+__pycache__/
+*.pyc
+*.log
+scripts/test_*.js
+scripts/*.png

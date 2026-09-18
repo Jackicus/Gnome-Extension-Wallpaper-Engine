@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="gnome-wallpaper-engine">
+  <schema id="org.gnome.shell.extensions.wallpaper-engine" path="/org/gnome/shell/extensions/wallpaper-engine/">
+    <key name="enabled-effects" type="as">
+      <default>['wave', 'sparkles']</default>
+      <summary>Enabled animated patterns</summary>
+      <description>List of animated pattern IDs active on the desktop wallpaper.</description>
+    </key>
+    <key name="background-mode" type="s">
+      <default>'desktop'</default>
+      <summary>Background base mode</summary>
+      <description>Base layer underneath patterns: 'desktop' (system wallpaper overlay), 'color' (palette gradient), or 'image' (custom picture).</description>
+    </key>
+    <key name="color-palette" type="s">
+      <default>'Classic Blue'</default>
+      <summary>Color gradient palette</summary>
+      <description>Color scheme used when background-mode is 'color'.</description>
+    </key>
+    <key name="custom-image" type="s">
+      <default>''</default>
+      <summary>Custom wallpaper image path</summary>
+      <description>Path to custom wallpaper image used when background-mode is 'image'.</description>
+    </key>
+    <key name="target-fps" type="i">
+      <default>30</default>
+      <summary>Target frame rate</summary>
+      <description>Target FPS for animation loop (30 or 60).</description>
+    </key>
+    <key name="speed" type="d">
+      <default>1.0</default>
+      <summary>Animation speed multiplier</summary>
+      <description>Pace multiplier for all animations (0.25 to 3.0).</description>
+    </key>
+    <key name="opacity" type="d">
+      <default>1.0</default>
+      <summary>Pattern opacity</summary>
+      <description>Global opacity of the animated patterns (0.1 to 1.0).</description>
+    </key>
+    <key name="pause-on-fullscreen" type="b">
+      <default>true</default>
+      <summary>Pause when fullscreen window is active</summary>
+      <description>Stops drawing while a fullscreen window is visible to save GPU and CPU power.</description>
+    </key>
+    <key name="pause-on-battery" type="b">
+      <default>false</default>
+      <summary>Pause on battery power</summary>
+      <description>Stops or reduces animations when the device is running on battery.</description>
+    </key>
+  </schema>
+</schemalist>

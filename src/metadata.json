@@ -1,0 +1,15 @@
+{
+  "name": "Wallpaper Engine",
+  "description": "Animated, stackable background effects layered over your desktop wallpaper.",
+  "uuid": "wallpaper-engine@jackt",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
+  ],
+  "settings-schema": "org.gnome.shell.extensions.wallpaper-engine",
+  "url": "https://github.com/jackt/Gnome-Wallpaper-Engine"
+}
