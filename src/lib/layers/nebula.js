@@ -13,6 +13,7 @@ export class NebulaLayer {
     constructor() {
         this._sprites = HUES.map(([r, g, b]) => glowSprite(128, r, g, b, 0));
         this._low = null;
+        this._lowCr = null;
         this._clouds = [];
 
         const rand = seeded(41);
@@ -36,6 +37,7 @@ export class NebulaLayer {
         const lw = Math.max(1, Math.ceil(w / SCALE));
         const lh = Math.max(1, Math.ceil(h / SCALE));
         this._low = new cairo.ImageSurface(cairo.Format.ARGB32, lw, lh);
+        this._lowCr = new cairo.Context(this._low);
     }
 
     draw(cr, s) {
@@ -43,7 +45,7 @@ export class NebulaLayer {
         const ow = this._low.getWidth();
         const oh = this._low.getHeight();
 
-        const lowCr = new cairo.Context(this._low);
+        const lowCr = this._lowCr;
         lowCr.save();
         lowCr.setOperator(cairo.Operator.CLEAR);
         lowCr.paint();

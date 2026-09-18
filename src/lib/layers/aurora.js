@@ -2,6 +2,10 @@ import cairo from 'cairo';
 import { makeNoise } from '../layer.js';
 
 const SCALE = 5;
+// Curtains are painted one strip at a time into the low-res buffer, and each
+// strip is a cairo paint of its own. The buffer is blown up by SCALE on the way
+// out, so strips narrower than this cost paint calls for detail nothing can see.
+const STRIDE = 2;
 
 const CURTAINS = [
     { rgb: [150 / 255, 110 / 255, 255 / 255], hang: 0.34, wander: 0.14, minLen: 0.16, maxLen: 0.5, alpha: 0.55, drift: 0.018, seed: 31 },
@@ -27,12 +31,14 @@ export class AuroraLayer {
         this._strips = CURTAINS.map(c => curtainStrip(c.rgb));
         this._noises = CURTAINS.map(c => makeNoise(c.seed));
         this._low = null;
+        this._lowCr = null;
     }
 
     resize(w, h) {
         const lw = Math.max(1, Math.ceil(w / SCALE));
         const lh = Math.max(1, Math.ceil(h / SCALE));
         this._low = new cairo.ImageSurface(cairo.Format.ARGB32, lw, lh);
+        this._lowCr = new cairo.Context(this._low);
     }
 
     draw(cr, s) {
@@ -40,7 +46,7 @@ export class AuroraLayer {
         const ow = this._low.getWidth();
         const oh = this._low.getHeight();
 
-        const lowCr = new cairo.Context(this._low);
+        const lowCr = this._lowCr;
         lowCr.save();
         lowCr.setOperator(cairo.Operator.CLEAR);
         lowCr.paint();
@@ -56,7 +62,7 @@ export class AuroraLayer {
             const strip = this._strips[c];
             const shift = s.t * cur.drift;
 
-            for (let x = 0; x < ow; x++) {
+            for (let x = 0; x < ow; x += STRIDE) {
                 const u = x / ow;
                 const hang = noise.fbm(u * 1.6 + shift, 3.3 + s.t * 0.02) - 0.5;
                 const len = noise.fbm(u * 2.4 - shift * 1.3, 9 + s.t * 0.05);
@@ -68,7 +74,7 @@ export class AuroraLayer {
                 if (height > 1 && alpha > 0.01) {
                     lowCr.save();
                     lowCr.translate(x, bottom - height);
-                    lowCr.scale(1, height / 128);
+                    lowCr.scale(Math.min(STRIDE, ow - x), height / 128);
                     lowCr.setSourceSurface(strip, 0, 0);
                     lowCr.paintWithAlpha(alpha);
                     lowCr.restore();

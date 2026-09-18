@@ -26,6 +26,11 @@
       <summary>Target frame rate</summary>
       <description>Target FPS for animation loop (30 or 60).</description>
     </key>
+    <key name="render-scale" type="d">
+      <default>0.75</default>
+      <summary>Render resolution scale</summary>
+      <description>Fraction of the monitor resolution the patterns are drawn at before the GPU scales them back up (0.25 to 1.0). Lower is cheaper and softer.</description>
+    </key>
     <key name="speed" type="d">
       <default>1.0</default>
       <summary>Animation speed multiplier</summary>

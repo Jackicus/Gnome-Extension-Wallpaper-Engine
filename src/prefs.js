@@ -260,6 +260,32 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
         group.add(fpsRow);
 
+        // Render resolution
+        const scaleOptions = [
+            { scale: 1.0, label: 'Full — sharpest, most CPU' },
+            { scale: 0.75, label: 'High (Recommended) — barely softer, noticeably cheaper' },
+            { scale: 0.5, label: 'Balanced — half resolution, roughly half the cost' },
+            { scale: 0.35, label: 'Power Saver — softest, cheapest' },
+        ];
+        const scaleModel = new Gtk.StringList();
+        for (const opt of scaleOptions) scaleModel.append(opt.label);
+
+        const currentScale = settings.get_double('render-scale') || 1.0;
+        let initialScaleIndex = scaleOptions.findIndex(o => Math.abs(o.scale - currentScale) < 0.01);
+        if (initialScaleIndex < 0) initialScaleIndex = 1;
+
+        const scaleRow = new Adw.ComboRow({
+            title: 'Render Resolution',
+            subtitle: 'Patterns are drawn at this fraction of the screen and scaled back up by the GPU. The single biggest lever on CPU use — worth lowering on a 4K display.',
+            model: scaleModel,
+            selected: initialScaleIndex,
+        });
+        scaleRow.connect('notify::selected', () => {
+            const chosen = scaleOptions[scaleRow.get_selected()]?.scale || 1.0;
+            settings.set_double('render-scale', chosen);
+        });
+        group.add(scaleRow);
+
         // Pause on fullscreen
         const fullscreenRow = new Adw.SwitchRow({
             title: 'Pause on Fullscreen Windows',

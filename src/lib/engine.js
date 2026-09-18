@@ -21,6 +21,8 @@ export class MonitorRenderer {
         this._lastFrameTime = 0;
         this._timerId = 0;
         this._clockFps = 0;
+        this._surfaceW = 0;
+        this._surfaceH = 0;
 
         this._build();
     }
@@ -41,11 +43,33 @@ export class MonitorRenderer {
             reactive: false,
         });
 
+        // The base is a canvas of its own because it is still: it only changes
+        // when the palette does, and it must not take the pattern opacity with
+        // it. Keeping it here also keeps a full-screen gradient out of every
+        // animated frame.
+        this._base = new St.DrawingArea({
+            width,
+            height,
+            reactive: false,
+        });
+        this._container.add_child(this._base);
+        this._base.connect('repaint', (area) => {
+            const cr = area.get_context();
+            const [w, h] = area.get_surface_size();
+            try {
+                if (this._state.mode === 'color')
+                    paintPalette(cr, this._state.colorPalette, w, h);
+            } finally {
+                cr.$dispose();
+            }
+        });
+
         this._area = new St.DrawingArea({
             width,
             height,
             reactive: false,
         });
+        this._area.set_pivot_point(0, 0);
         this._container.add_child(this._area);
 
         this._area.connect('repaint', (area) => {
@@ -58,13 +82,53 @@ export class MonitorRenderer {
             }
         });
 
+        this._applyRenderScale();
         this._reconcile();
         this._updateBaseStyle();
         this._applyOpacity();
         this._startClock();
     }
 
+    _updateBase() {
+        if (!this._base) return;
+        this._base.visible = this._state.mode === 'color';
+        if (this._base.visible) this._base.queue_repaint();
+    }
+
+    /**
+     * Sizes the canvas in real pixels.
+     *
+     * Everything a layer draws costs per pixel of this surface, and it is all
+     * software Cairo on the compositor thread -- so drawing at a fraction of the
+     * monitor and letting the GPU scale the texture back up is the cheapest
+     * quality dial there is. Patterns are soft glows and gradients, which survive
+     * it well; the sharp lines (wave crests, constellation links) are what goes
+     * first.
+     */
+    _applyRenderScale() {
+        const { width, height } = this.monitor;
+        const scale = Math.max(0.25, Math.min(1.0, this._state.renderScale || 1.0));
+        const sw = Math.max(1, Math.round(width * scale));
+        const sh = Math.max(1, Math.round(height * scale));
+
+        if (sw === this._surfaceW && sh === this._surfaceH) return;
+
+        this._surfaceW = sw;
+        this._surfaceH = sh;
+        this._area.set_size(sw, sh);
+        this._area.set_scale(width / sw, height / sh);
+
+        // Layers precompute for one canvas size -- starfield bakes a band surface
+        // of exactly it, constellation wraps its points against it -- so they have
+        // to be told in the same pixels the draw handler will hand them.
+        for (const layer of this._layers.values()) {
+            layer.resize?.(sw, sh);
+        }
+    }
+
     _updateBaseStyle() {
+        this._updateBase();
+
         if (!this._container) return;
 
         if (this._state.mode === 'image' && this._state.customImage) {
@@ -78,6 +142,9 @@ export class MonitorRenderer {
     }
 
     _applyOpacity() {
+        // Only the patterns fade: the gradient backdrop is a background, not a
+        // pattern, and dimming it just showed the wallpaper through what is meant
+        // to replace it.
         if (!this._area) return;
         const opacity = Math.max(0.1, Math.min(1.0, this._state.opacity));
         this._area.opacity = Math.round(opacity * 255);
@@ -92,7 +159,7 @@ export class MonitorRenderer {
             let layer = this._layers.get(id);
             if (!layer) {
                 layer = effect.create();
-                layer.resize?.(this.monitor.width, this.monitor.height);
+                layer.resize?.(this._surfaceW, this._surfaceH);
             }
             next.set(id, layer);
         }
@@ -102,6 +169,7 @@ export class MonitorRenderer {
     updateState(newState) {
         const fpsChanged = newState.targetFps !== this._state.targetFps;
         this._state = newState;
+        this._applyRenderScale();
         this._reconcile();
         this._updateBaseStyle();
         this._applyOpacity();
@@ -189,14 +257,8 @@ export class MonitorRenderer {
     }
 
     _onDraw(cr, w, h) {
-        // St hands over a surface that has already been cleared, so only an opaque
-        // base needs painting; the other modes show what is behind the canvas.
-        if (this._state.mode === 'color') {
-            cr.save();
-            paintPalette(cr, this._state.colorPalette, w, h);
-            cr.restore();
-        }
-
+        // St hands over an already-cleared surface, and the base layer is painted
+        // by a canvas of its own, so this handler is only ever the patterns.
         if (this._layers.size === 0) return;
 
         const scene = { w, h, t: this._time, dt: this._dt };
@@ -220,5 +282,6 @@ export class MonitorRenderer {
             this._container = null;
         }
         this._area = null;
+        this._base = null;
     }
 }
