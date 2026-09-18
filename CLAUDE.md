@@ -29,9 +29,16 @@ symlinks it, so adding a file there ships it, with no list to keep in sync.
   parents the lot into `Main.layoutManager._backgroundGroup` (over the wallpaper,
   under the windows). Rebuilds on `monitors-changed`; pushes new state to the
   renderers on any settings change.
-- `lib/engine.js` — one monitor's `St.DrawingArea` plus the frame clock. It paints
-  the base layer (palette gradient, or clears to transparent so the real wallpaper
-  or the custom image behind shows through), then every active layer in order.
+- `lib/engine.js` — one monitor's canvases plus the frame clock. Two
+  `St.DrawingArea`s: a **base** that paints the palette gradient and only
+  repaints when the palette changes, and the **pattern** canvas that every layer
+  draws into each frame. They are separate so the pattern opacity does not fade
+  the backdrop, and so a still gradient is not repainted thirty times a second.
+- `lib/overview.js` — the same canvas, cloned into the overview's workspace
+  previews, its thumbnail strip, and the workspace-slide strip. Without it the
+  desktop goes bare the moment any of those appear.
+- `lib/power.js` — a UPower proxy behind `pause-on-battery`, created only while
+  that setting is on.
 - `lib/catalog.js` — **the single list of patterns.** id, title, description,
   icon and constructor. `prefs.js` builds its toggles from it and `app.js`
   resolves ids through it, so adding a pattern is a file in `lib/layers/`, an
@@ -46,6 +53,10 @@ symlinks it, so adding a file there ships it, with no list to keep in sync.
 - `prefs.js`, `schemas/` — the settings dialog and the keys behind it.
 
 ## How it fits together
+
+`render-scale` decides how many pixels any of this costs: the pattern canvas is
+drawn at that fraction of the monitor and scaled back up by the GPU. It is the
+only lever that measurably changes CPU use (see the Rules below).
 
 `background-mode` picks the base — `desktop` (transparent, the system wallpaper
 shows through), `color` (a palette from `palettes.js`) or `image` (a file, set as
@@ -62,6 +73,16 @@ window on that monitor.
   times a second on the main loop; a slow one is a stuttering desktop. Precompute
   in `resize()`, stamp cached sprites rather than building gradients per particle,
   and scale particle counts with `countFor` so a 4K monitor doesn't cost 4× a 1080p one.
+- **The cost is pixels, not cleverness.** Measured on one 1600×900 monitor at 30
+  FPS, aurora and nebula each took about half a core at full resolution, and
+  micro-optimising them (fewer cairo calls, less per-frame allocation) moved that
+  by at most 13%. Halving the render scale halved it. Before optimising a layer,
+  measure — `/proc/<shell pid>/stat` over a ten-second window, one pattern at a
+  time — rather than assuming the JS is what costs.
+- **`resize(w, h)` is given the canvas size, not the monitor size.** They differ
+  whenever the render scale does, and a layer that bakes a surface of exactly the
+  canvas (starfield's band) or wraps against it (constellation) breaks if it
+  assumes otherwise.
 - **Layers are seeded, not random.** `seeded(n)` with a fixed number keeps a
   pattern's layout identical across reloads, which is the only way to tell a
   deliberate visual change from noise in a screenshot.
@@ -85,9 +106,17 @@ window on that monitor.
   restart — `reload` alone does not recompile for the nested shell.
 - **St CSS is not web CSS.** No flexbox, grid, `calc()` or CSS variables; layout
   is done in JS. Almost nothing here is styled anyway — the pixels come from Cairo.
-- **`_backgroundGroup` is private shell API.** If the patterns stop appearing
-  after a GNOME upgrade, that is the first thing to check (`app.js` falls back to
-  `global.window_group`).
+- **`_backgroundGroup` is private shell API**, and so is every path
+  `overview.js` walks to reach the previews
+  (`controls._workspacesDisplay._workspacesViews`, a workspace's `_background`
+  and its `_backgroundGroup`, `controls._thumbnailsBox._thumbnails`) and the
+  slide (`Main.wm._workspaceAnimation._prepareWorkspaceSwitch`). If the patterns
+  stop appearing at all, check the first (`app.js` falls back to
+  `global.window_group`); if they only vanish in the overview or during a
+  workspace switch, check `overview.js`.
+- **A canvas nothing can see costs nothing.** Clutter culls a fully covered
+  actor, so the draw handler simply stops being called — which also means a CPU
+  measurement taken while another extension covers the screen reads as zero.
 - **Check the logs.** Exceptions inside an extension are swallowed into the shell
   journal, never a terminal; `make logs` is the only way to see them. A layer that
   throws is caught per-frame in `engine.js`, so a broken pattern looks like a
