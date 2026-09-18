@@ -5,6 +5,7 @@ import St from 'gi://St';
 import { MonitorRenderer } from './engine.js';
 import { parseEffectIds } from './catalog.js';
 import { PowerMonitor } from './power.js';
+import { OverviewCanvas } from './overview.js';
 
 const DEFAULTS = {
     enabledEffects: ['wave', 'sparkles'],
@@ -25,6 +26,7 @@ export class WallpaperEngineApp {
         this._settings = null;
         this._rootContainer = null;
         this._power = null;
+        this._overview = null;
         this._renderers = new Map(); // monitorIndex -> MonitorRenderer
 
         try {
@@ -36,6 +38,12 @@ export class WallpaperEngineApp {
 
     enable() {
         this._build();
+
+        // The overview and the workspace slide draw their own wallpaper, so the
+        // canvas has to be lent to them as a clone or the desktop goes bare the
+        // moment either one starts.
+        this._overview = new OverviewCanvas(index => this._renderers.get(index)?.actor ?? null);
+        this._overview.enable();
 
         Main.layoutManager.connectObject(
             'monitors-changed', () => this._onMonitorsChanged(),
@@ -54,6 +62,9 @@ export class WallpaperEngineApp {
     disable() {
         Main.layoutManager.disconnectObject(this);
         this._settings?.disconnectObject(this);
+
+        this._overview?.destroy();
+        this._overview = null;
 
         this._power?.destroy();
         this._power = null;
@@ -133,6 +144,8 @@ export class WallpaperEngineApp {
     _onMonitorsChanged() {
         console.log('[WallpaperEngine] Monitors changed, updating layout...');
         this._build();
+        // Any clone handed out points at a renderer that no longer exists.
+        this._overview?.invalidate();
     }
 
     _pushState() {
