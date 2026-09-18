@@ -1,16 +1,29 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
 import St from 'gi://St';
-import GLib from 'gi://GLib';
 
 import { MonitorRenderer } from './engine.js';
 import { parseEffectIds } from './catalog.js';
+import { PowerMonitor } from './power.js';
+
+const DEFAULTS = {
+    enabledEffects: ['wave', 'sparkles'],
+    mode: 'desktop',
+    colorPalette: 'Classic Blue',
+    customImage: '',
+    targetFps: 30,
+    speed: 1.0,
+    opacity: 1.0,
+    pauseOnFullscreen: true,
+    pauseOnBattery: false,
+};
 
 export class WallpaperEngineApp {
     constructor(extension) {
         this._extension = extension;
         this._settings = null;
         this._rootContainer = null;
+        this._power = null;
         this._renderers = new Map(); // monitorIndex -> MonitorRenderer
 
         try {
@@ -28,56 +41,57 @@ export class WallpaperEngineApp {
             this
         );
 
-        if (this._settings) {
-            const keys = [
-                'enabled-effects',
-                'background-mode',
-                'color-palette',
-                'custom-image',
-                'target-fps',
-                'speed',
-                'opacity',
-                'pause-on-fullscreen',
-                'pause-on-battery',
-            ];
-            for (const key of keys) {
-                this._settings.connectObject(`changed::${key}`, () => this._onSettingsChanged(), this);
-            }
-        }
+        // Every key feeds the same state object, so one handler covers them all.
+        this._settings?.connectObject('changed', (_s, key) => {
+            if (key === 'pause-on-battery') this._syncPowerMonitor();
+            this._pushState();
+        }, this);
+
+        this._syncPowerMonitor();
     }
 
     disable() {
         Main.layoutManager.disconnectObject(this);
         this._settings?.disconnectObject(this);
 
+        this._power?.destroy();
+        this._power = null;
+
         this._teardown();
     }
 
-    _getState() {
-        if (!this._settings) {
-            return {
-                enabledEffects: ['wave', 'sparkles'],
-                mode: 'desktop',
-                colorPalette: 'Classic Blue',
-                customImage: '',
-                targetFps: 30,
-                speed: 1.0,
-                opacity: 1.0,
-                pauseOnFullscreen: true,
-                pauseOnBattery: false,
-            };
+    /**
+     * UPower is only worth watching while something acts on it.
+     */
+    _syncPowerMonitor() {
+        const wanted = this._settings
+            ? this._settings.get_boolean('pause-on-battery')
+            : DEFAULTS.pauseOnBattery;
+
+        if (wanted && !this._power) {
+            this._power = new PowerMonitor(() => this._pushState());
+        } else if (!wanted && this._power) {
+            this._power.destroy();
+            this._power = null;
         }
+    }
+
+    _getState() {
+        const settings = this._settings;
+        if (!settings)
+            return { ...DEFAULTS, onBattery: false };
 
         return {
-            enabledEffects: parseEffectIds(this._settings.get_strv('enabled-effects')),
-            mode: this._settings.get_string('background-mode') || 'desktop',
-            colorPalette: this._settings.get_string('color-palette') || 'Classic Blue',
-            customImage: this._settings.get_string('custom-image') || '',
-            targetFps: this._settings.get_int('target-fps') || 30,
-            speed: this._settings.get_double('speed') || 1.0,
-            opacity: this._settings.get_double('opacity') || 1.0,
-            pauseOnFullscreen: this._settings.get_boolean('pause-on-fullscreen'),
-            pauseOnBattery: this._settings.get_boolean('pause-on-battery'),
+            enabledEffects: parseEffectIds(settings.get_strv('enabled-effects')),
+            mode: settings.get_string('background-mode') || DEFAULTS.mode,
+            colorPalette: settings.get_string('color-palette') || DEFAULTS.colorPalette,
+            customImage: settings.get_string('custom-image') || DEFAULTS.customImage,
+            targetFps: settings.get_int('target-fps') || DEFAULTS.targetFps,
+            speed: settings.get_double('speed') || DEFAULTS.speed,
+            opacity: settings.get_double('opacity') || DEFAULTS.opacity,
+            pauseOnFullscreen: settings.get_boolean('pause-on-fullscreen'),
+            pauseOnBattery: settings.get_boolean('pause-on-battery'),
+            onBattery: this._power?.onBattery ?? false,
         };
     }
 
@@ -119,9 +133,8 @@ export class WallpaperEngineApp {
         this._build();
     }
 
-    _onSettingsChanged() {
+    _pushState() {
         const state = this._getState();
-        console.log(`[WallpaperEngine] Settings changed. Mode: ${state.mode}, Effects: ${state.enabledEffects.join(', ')}`);
         for (const renderer of this._renderers.values()) {
             renderer.updateState(state);
         }

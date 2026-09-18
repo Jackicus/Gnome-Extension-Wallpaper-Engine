@@ -1,3 +1,4 @@
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import cairo from 'cairo';
@@ -14,12 +15,12 @@ export class MonitorRenderer {
         this._state = settingsState;
 
         this._layers = new Map(); // id -> EffectLayer instance
-        this._activeIds = [];
 
         this._time = 0;
         this._dt = 0;
         this._lastFrameTime = 0;
         this._timerId = 0;
+        this._clockFps = 0;
 
         this._build();
     }
@@ -59,6 +60,7 @@ export class MonitorRenderer {
 
         this._reconcile();
         this._updateBaseStyle();
+        this._applyOpacity();
         this._startClock();
     }
 
@@ -75,6 +77,12 @@ export class MonitorRenderer {
         }
     }
 
+    _applyOpacity() {
+        if (!this._area) return;
+        const opacity = Math.max(0.1, Math.min(1.0, this._state.opacity));
+        this._area.opacity = Math.round(opacity * 255);
+    }
+
     _reconcile() {
         const next = new Map();
         for (const id of this._state.enabledEffects) {
@@ -89,38 +97,32 @@ export class MonitorRenderer {
             next.set(id, layer);
         }
         this._layers = next;
-        this._activeIds = [...next.keys()];
     }
 
     updateState(newState) {
+        const fpsChanged = newState.targetFps !== this._state.targetFps;
         this._state = newState;
         this._reconcile();
         this._updateBaseStyle();
+        this._applyOpacity();
 
-        if (this._area) {
-            this._area.opacity = Math.round(Math.max(0.1, Math.min(1.0, this._state.opacity)) * 255);
-            this._area.queue_repaint();
+        // The clock is built around one interval, so a new frame rate needs a new
+        // timer -- without this, changing it did nothing until the next reload.
+        if (fpsChanged) {
+            this._stopClock();
+            this._startClock();
         }
-    }
 
-    resize(monitor) {
-        this.monitor = monitor;
-        const { width, height, x, y } = monitor;
-        this._container.set_position(x, y);
-        this._container.set_size(width, height);
-        this._area.set_size(width, height);
-
-        for (const layer of this._layers.values()) {
-            layer.resize?.(width, height);
-        }
-        this._area.queue_repaint();
+        // A still canvas (no patterns) never repaints itself, so the base layer
+        // has to be redrawn here or a palette change would not show.
+        this._area?.queue_repaint();
     }
 
     _startClock() {
         if (this._timerId) return;
 
-        const fps = Math.max(15, this._state.targetFps || 30);
-        const intervalMs = Math.round(1000 / fps);
+        this._clockFps = Math.max(15, this._state.targetFps || 30);
+        const intervalMs = Math.round(1000 / this._clockFps);
 
         this._timerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, intervalMs, () => {
             if (!this._container || !this._area) {
@@ -128,17 +130,11 @@ export class MonitorRenderer {
                 return GLib.SOURCE_REMOVE;
             }
 
-            // Pause check: if desktop mode and no active layers, sleep
-            if (this._state.mode === 'desktop' && this._layers.size === 0) {
+            if (this._isIdle()) {
+                // Resume from where the animation stopped rather than jumping
+                // forward by however long the pause lasted.
+                this._lastFrameTime = 0;
                 return GLib.SOURCE_CONTINUE;
-            }
-
-            // Pause check: fullscreen window on this monitor
-            if (this._state.pauseOnFullscreen) {
-                const focusWindow = global.display?.focus_window;
-                if (focusWindow && focusWindow.is_fullscreen() && focusWindow.get_monitor() === this.monitor.index) {
-                    return GLib.SOURCE_CONTINUE;
-                }
             }
 
             const now = GLib.get_monotonic_time() / 1000000;
@@ -159,6 +155,32 @@ export class MonitorRenderer {
         });
     }
 
+    /**
+     * Whether this frame can be skipped. Every branch here is a frame's worth of
+     * full-screen Cairo work that nobody would have seen, on the thread that also
+     * drives the rest of the desktop.
+     */
+    _isIdle() {
+        // Nothing animates, so the last paint still stands.
+        if (this._layers.size === 0) return true;
+
+        // Not on screen: another session mode (the lock screen above all), or an
+        // actor that is not currently part of what gets painted.
+        if (Main.sessionMode.isLocked) return true;
+        if (!this._area.mapped) return true;
+
+        // A fullscreen window covers this monitor's background entirely. Asking
+        // the display rather than the focus window also catches a fullscreen
+        // video on a second monitor while something else holds focus.
+        if (this._state.pauseOnFullscreen &&
+            global.display?.get_monitor_in_fullscreen(this.monitor.index))
+            return true;
+
+        if (this._state.pauseOnBattery && this._state.onBattery) return true;
+
+        return false;
+    }
+
     _stopClock() {
         if (this._timerId) {
             GLib.source_remove(this._timerId);
@@ -167,43 +189,32 @@ export class MonitorRenderer {
     }
 
     _onDraw(cr, w, h) {
-        cr.save();
-
-        // 1. Base Layer
+        // St hands over a surface that has already been cleared, so only an opaque
+        // base needs painting; the other modes show what is behind the canvas.
         if (this._state.mode === 'color') {
+            cr.save();
             paintPalette(cr, this._state.colorPalette, w, h);
-        } else {
-            // Desktop overlay or image background: clear canvas to transparent
-            cr.setOperator(cairo.Operator.CLEAR);
-            cr.paint();
+            cr.restore();
         }
-        cr.restore();
 
-        // 2. Animated Pattern Layers
-        if (this._layers.size > 0) {
-            const scene = {
-                w,
-                h,
-                t: this._time,
-                dt: this._dt,
-            };
+        if (this._layers.size === 0) return;
 
-            for (const layer of this._layers.values()) {
-                cr.save();
-                try {
-                    layer.draw(cr, scene);
-                } catch (e) {
-                    console.error(`[WallpaperEngine] Layer draw error: ${e}`);
-                }
-                cr.restore();
+        const scene = { w, h, t: this._time, dt: this._dt };
+
+        for (const layer of this._layers.values()) {
+            cr.save();
+            try {
+                layer.draw(cr, scene);
+            } catch (e) {
+                console.error(`[WallpaperEngine] Layer draw error: ${e}`);
             }
+            cr.restore();
         }
     }
 
     destroy() {
         this._stopClock();
         this._layers.clear();
-        this._activeIds = [];
         if (this._container) {
             this._container.destroy();
             this._container = null;
