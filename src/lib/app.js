@@ -6,18 +6,22 @@ import { MonitorRenderer } from './engine.js';
 import { parseEffectIds } from './catalog.js';
 import { PowerMonitor } from './power.js';
 import { OverviewCanvas } from './overview.js';
+import { ShellBackground } from './background.js';
 
 const DEFAULTS = {
     enabledEffects: ['wave', 'sparkles'],
     mode: 'desktop',
     colorPalette: 'Classic Blue',
     customImage: '',
-    targetFps: 30,
+    targetFps: 0,
     renderScale: 0.75,
+    cpuBudget: 0.5,
     speed: 1.0,
     opacity: 1.0,
     pauseOnFullscreen: true,
     pauseOnBattery: false,
+    nativeBase: false,
+    monitorCount: 1,
 };
 
 export class WallpaperEngineApp {
@@ -27,6 +31,7 @@ export class WallpaperEngineApp {
         this._rootContainer = null;
         this._power = null;
         this._overview = null;
+        this._background = null;
         this._renderers = new Map(); // monitorIndex -> MonitorRenderer
 
         try {
@@ -37,6 +42,11 @@ export class WallpaperEngineApp {
     }
 
     enable() {
+        // The base goes to the shell's own wallpaper before anything is built,
+        // so the renderers know whether they still have one to paint.
+        this._background = new ShellBackground();
+        this._background.update(this._getState());
+
         this._build();
 
         // The overview and the workspace slide draw their own wallpaper, so the
@@ -69,6 +79,11 @@ export class WallpaperEngineApp {
         this._power?.destroy();
         this._power = null;
 
+        // Gives the user's wallpaper back before the canvas over it goes away,
+        // so the desktop is never briefly bare.
+        this._background?.destroy();
+        this._background = null;
+
         this._teardown();
     }
 
@@ -90,21 +105,31 @@ export class WallpaperEngineApp {
 
     _getState() {
         const settings = this._settings;
+        // Each monitor gets a renderer of its own and draws the whole stack, so
+        // the cpu-budget -- which is for the wallpaper, not for one head -- has
+        // to be split between them before a renderer can pace against it.
+        const monitorCount = Math.max(1, Main.layoutManager.monitors?.length ?? 1);
+
         if (!settings)
-            return { ...DEFAULTS, onBattery: false };
+            return { ...DEFAULTS, onBattery: false, monitorCount };
 
         return {
+            monitorCount,
             enabledEffects: parseEffectIds(settings.get_strv('enabled-effects')),
             mode: settings.get_string('background-mode') || DEFAULTS.mode,
             colorPalette: settings.get_string('color-palette') || DEFAULTS.colorPalette,
             customImage: settings.get_string('custom-image') || DEFAULTS.customImage,
-            targetFps: settings.get_int('target-fps') || DEFAULTS.targetFps,
+            // Not `||`: zero is "follow the display", and so is every negative.
+            targetFps: settings.get_int('target-fps'),
             renderScale: settings.get_double('render-scale') || DEFAULTS.renderScale,
+            // Zero is a real setting here too: no limit at all.
+            cpuBudget: settings.get_double('cpu-budget'),
             speed: settings.get_double('speed') || DEFAULTS.speed,
             opacity: settings.get_double('opacity') || DEFAULTS.opacity,
             pauseOnFullscreen: settings.get_boolean('pause-on-fullscreen'),
             pauseOnBattery: settings.get_boolean('pause-on-battery'),
             onBattery: this._power?.onBattery ?? false,
+            nativeBase: this._background?.active ?? false,
         };
     }
 
@@ -143,12 +168,18 @@ export class WallpaperEngineApp {
 
     _onMonitorsChanged() {
         console.log('[WallpaperEngine] Monitors changed, updating layout...');
+        // A palette is rendered at the size of the largest monitor.
+        this._background?.update(this._getState());
         this._build();
         // Any clone handed out points at a renderer that no longer exists.
         this._overview?.invalidate();
     }
 
     _pushState() {
+        // The mode or the picture may have changed, and whether the shell is
+        // carrying the base decides what the renderers draw.
+        this._background?.update(this._getState());
+
         const state = this._getState();
         for (const renderer of this._renderers.values()) {
             renderer.updateState(state);

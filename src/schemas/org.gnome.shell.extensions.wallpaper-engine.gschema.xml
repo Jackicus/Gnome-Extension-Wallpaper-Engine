@@ -22,9 +22,14 @@
       <description>Path to custom wallpaper image used when background-mode is 'image'.</description>
     </key>
     <key name="target-fps" type="i">
-      <default>30</default>
+      <default>0</default>
       <summary>Target frame rate</summary>
-      <description>Target FPS for animation loop (30 or 60).</description>
+      <description>How often the patterns are redrawn. 0 follows the display's own refresh rate, and a negative follows a fraction of it (-2 is every other frame, -3 every third); a positive number is that many frames per second regardless of the display. Native pacing backs itself off if drawing starts taking too much of the compositor.</description>
+    </key>
+    <key name="cpu-budget" type="d">
+      <default>0.5</default>
+      <summary>CPU the patterns may use</summary>
+      <description>How much of one CPU core the drawing is allowed to cost, counting the compositing it causes (0.25 to 1.0, or 0 for no limit). Only applies when target-fps follows the display: the clock paints on fewer of the display's frames until it fits, and on more again when the load falls.</description>
     </key>
     <key name="render-scale" type="d">
       <default>0.75</default>

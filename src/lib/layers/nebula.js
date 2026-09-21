@@ -1,5 +1,5 @@
 import cairo from 'cairo';
-import { TAU, glowSprite, seeded, stampWithAlpha } from '../layer.js';
+import { TAU, addScaled, glowSprite, seeded, stampWithAlpha } from '../layer.js';
 
 const SCALE = 8;
 const HUES = [
@@ -67,14 +67,6 @@ export class NebulaLayer {
         }
         lowCr.restore();
 
-        // Bilinear upscale to main canvas
-        cr.save();
-        cr.setOperator(cairo.Operator.ADD);
-        const pat = new cairo.SurfacePattern(this._low);
-        pat.setFilter(cairo.Filter.BILINEAR);
-        cr.scale(s.w / ow, s.h / oh);
-        cr.setSource(pat);
-        cr.paintWithAlpha(0.9);
-        cr.restore();
+        addScaled(cr, this._low, s, 0.9);
     }
 }

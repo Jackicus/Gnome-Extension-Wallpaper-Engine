@@ -1,5 +1,5 @@
 import cairo from 'cairo';
-import { makeNoise } from '../layer.js';
+import { addScaled, makeNoise } from '../layer.js';
 
 const SCALE = 5;
 // Curtains are painted one strip at a time into the low-res buffer, and each
@@ -83,14 +83,6 @@ export class AuroraLayer {
         }
         lowCr.restore();
 
-        // Bilinear upscale to main canvas
-        cr.save();
-        cr.setOperator(cairo.Operator.ADD);
-        const pat = new cairo.SurfacePattern(this._low);
-        pat.setFilter(cairo.Filter.BILINEAR);
-        cr.scale(s.w / ow, s.h / oh);
-        cr.setSource(pat);
-        cr.paintWithAlpha(0.85);
-        cr.restore();
+        addScaled(cr, this._low, s, 0.85);
     }
 }

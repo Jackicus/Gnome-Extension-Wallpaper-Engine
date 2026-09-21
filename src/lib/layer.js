@@ -128,3 +128,53 @@ export function countFor(w, h, per1080p, min = 12) {
     const share = (w * h) / (1920 * 1080);
     return Math.max(min, Math.round(per1080p * Math.min(1.6, Math.max(0.35, share))));
 }
+
+/**
+ * Add a low-resolution buffer to the canvas, blown back up to fill it.
+ *
+ * The obvious way to do this is one call -- a scaled, filtered SurfacePattern
+ * painted with `Operator.ADD` -- and it is the single most expensive thing in
+ * the extension: cairo has a fast path for a filtered upscale and a fast path
+ * for ADD, but none for the two together, so it falls back to a general loop
+ * over every destination pixel. Measured on a 1440x810 canvas, one such call is
+ * **8.1ms**; the same upscale with OVER is 2.7ms and an unscaled ADD is 0.5ms.
+ *
+ * So it is done in two passes instead -- scale into a full-size scratch buffer
+ * with SOURCE, then add that buffer 1:1 -- for the same pixels in **1.7ms**.
+ * The scratch is the engine's, one per canvas rather than one per layer, and is
+ * fully overwritten by the SOURCE pass so it never needs clearing. Without one
+ * (a layer driven outside the engine) this falls back to the slow single call.
+ */
+export function addScaled(cr, low, s, alpha) {
+    const ow = low.getWidth();
+    const oh = low.getHeight();
+    const scratch = s.scratch;
+
+    if (!scratch || scratch.getWidth() !== s.w || scratch.getHeight() !== s.h) {
+        cr.save();
+        cr.setOperator(cairo.Operator.ADD);
+        const pat = new cairo.SurfacePattern(low);
+        pat.setFilter(cairo.Filter.BILINEAR);
+        cr.scale(s.w / ow, s.h / oh);
+        cr.setSource(pat);
+        cr.paintWithAlpha(alpha);
+        cr.restore();
+        return;
+    }
+
+    const scr = s.scratchCr;
+    scr.save();
+    scr.setOperator(cairo.Operator.SOURCE);
+    const pat = new cairo.SurfacePattern(low);
+    pat.setFilter(cairo.Filter.BILINEAR);
+    scr.scale(s.w / ow, s.h / oh);
+    scr.setSource(pat);
+    scr.paint();
+    scr.restore();
+
+    cr.save();
+    cr.setOperator(cairo.Operator.ADD);
+    cr.setSourceSurface(scratch, 0, 0);
+    cr.paintWithAlpha(alpha);
+    cr.restore();
+}

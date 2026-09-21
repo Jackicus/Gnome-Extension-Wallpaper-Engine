@@ -6,6 +6,51 @@ import Gio from 'gi://Gio';
 import { EFFECTS, parseEffectIds } from './lib/catalog.js';
 import { PALETTE_NAMES } from './lib/palettes.js';
 
+/**
+ * The refresh rates the displays are currently running at, for the labels.
+ *
+ * Prefs is its own process, with no stage and no Clutter views to ask, so this
+ * goes to the same place the control centre does. It is decoration: every label
+ * reads sensibly without it, and the shell side measures the real rate itself.
+ */
+function currentRefreshRates() {
+    try {
+        const reply = Gio.DBus.session.call_sync(
+            'org.gnome.Mutter.DisplayConfig',
+            '/org/gnome/Mutter/DisplayConfig',
+            'org.gnome.Mutter.DisplayConfig',
+            'GetCurrentState',
+            null,
+            null,
+            Gio.DBusCallFlags.NONE,
+            500,
+            null
+        );
+
+        const [, monitors] = reply.deepUnpack();
+        const rates = [];
+        for (const monitor of monitors) {
+            const modes = monitor[1];
+            for (const mode of modes) {
+                const props = mode[6];
+                if (!props['is-current']?.deepUnpack()) continue;
+                rates.push(mode[3]);
+            }
+        }
+        return rates;
+    } catch (e) {
+        return [];
+    }
+}
+
+/** "240 Hz", or "240 Hz and 60 Hz" when the heads disagree. */
+function describeRates(rates) {
+    const unique = [...new Set(rates.map(hz => Math.round(hz)))].sort((a, b) => b - a);
+    if (unique.length === 0) return '';
+    if (unique.length === 1) return `${unique[0]} Hz`;
+    return `${unique.slice(0, -1).join(', ')} and ${unique[unique.length - 1]} Hz`;
+}
+
 export default class WallpaperEnginePreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
@@ -333,22 +378,78 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
         page.add(group);
 
+        // A fixed rate is a rate the display mostly cannot show: 60 frames a
+        // second on a 240Hz panel land two or three refreshes apart, which reads
+        // as judder however fast the panel is. The first two choices are shares
+        // of whatever this display does, so they are smooth on any of them.
+        const rates = currentRefreshRates();
+        const fastest = rates.length ? Math.max(...rates) : 0;
+        const asFps = share => (fastest ? ` — about ${Math.round(fastest / share)} FPS here` : '');
+
         const fpsRow = this._comboRow(state, {
             key: 'target-fps',
             choices: [
-                { value: 30, label: '30 FPS (Recommended — smooth & battery efficient)' },
-                { value: 60, label: '60 FPS (Maximum smoothness)' },
+                { value: 0, label: `Match the display — up to every frame it shows${asFps(1)}` },
+                { value: -2, label: `Half the display — at most every other frame${asFps(2)}` },
+                { value: 60, label: '60 FPS — fixed, whatever the display does' },
+                { value: 30, label: '30 FPS — fixed, battery friendly' },
             ],
-            read: (s2, k) => s2.get_int(k) || 30,
+            read: (s2, k) => {
+                const value = s2.get_int(k);
+                if (value <= 0) return value <= -2 ? -2 : 0;
+                return value >= 45 ? 60 : 30;
+            },
             write: (s2, k, value) => s2.set_int(k, value),
-            props: { title: 'Target Frame Rate' },
+            props: {
+                title: 'Frame Rate',
+                subtitle_lines: 0,
+                subtitle: (rates.length
+                    ? `Your displays run at ${describeRates(rates)}, and each one is paced separately. `
+                    : 'Each display is paced separately against its own refresh rate. ') +
+                    'The first two settings give frames back on their own when the shell starts using more CPU than a wallpaper should — lower the render resolution below to buy them back.',
+            },
         });
         group.add(fpsRow);
+
+        const budgetRow = this._comboRow(state, {
+            key: 'cpu-budget',
+            choices: [
+                { value: 0.25, label: 'A quarter of a core — lightest' },
+                { value: 0.5, label: 'Half a core (recommended)' },
+                { value: 0.75, label: 'Three quarters of a core' },
+                { value: 0, label: 'No limit — every frame, whatever it costs' },
+            ],
+            // Doubles never land exactly on the stored value, so snap to the
+            // nearest choice rather than falling back to the first one.
+            read: (s2, k) => {
+                const value = s2.get_double(k);
+                if (!(value > 0)) return 0;
+                return [0.25, 0.5, 0.75]
+                    .reduce((best, o) => Math.abs(o - value) < Math.abs(best - value) ? o : best);
+            },
+            write: (s2, k, value) => s2.set_double(k, value),
+            props: {
+                title: 'CPU Budget',
+                subtitle: 'How much of one core the patterns may cost while following the display, counting the compositing each repaint causes. Frames are given back when it is exceeded and taken again when there is room — so this is the ceiling, not the cost.',
+                subtitle_lines: 0,
+            },
+        });
+        group.add(budgetRow);
+
+        // A fixed rate ignores the budget: it was asked for as a number, and a
+        // number is what it gets.
+        const applyBudget = () => {
+            budgetRow.sensitive = settings.get_int('target-fps') <= 0;
+        };
+        applyBudget();
+        state.watch(k => {
+            if (k === 'target-fps') applyBudget();
+        });
 
         const scaleRow = this._comboRow(state, {
             key: 'render-scale',
             choices: [
-                { value: 1.0, label: 'Full — sharpest, most CPU' },
+                { value: 1.0, label: 'Native — every pixel, sharpest, most CPU' },
                 { value: 0.75, label: 'High (Recommended) — barely softer, noticeably cheaper' },
                 { value: 0.5, label: 'Balanced — half resolution, roughly half the cost' },
                 { value: 0.35, label: 'Power Saver — softest, cheapest' },
@@ -363,7 +464,8 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
             write: (s2, k, value) => s2.set_double(k, value),
             props: {
                 title: 'Render Resolution',
-                subtitle: 'Patterns are drawn at this fraction of the screen and scaled back up by the GPU. The single biggest lever on CPU use — worth lowering on a 4K display.',
+                subtitle: 'Patterns are drawn at this fraction of the screen and scaled back up by the GPU. The single biggest lever on what a frame costs, so it is also what buys the frame rate back: worth lowering on a 4K or high-refresh display.',
+                subtitle_lines: 0,
             },
         });
         group.add(scaleRow);
