@@ -162,7 +162,7 @@ export class OverviewCanvas {
             // The strip at the top of the overview shows the same workspaces at
             // thumbnail size; its contents are laid out in stage coordinates, as
             // the window clones beside this one are.
-            const wsIndex = workspace.metaWorkspace?.index?.();
+            const wsIndex = workspace.metaWorkspace?.index();
             const thumbnails = Main.overview._overview?.controls?._thumbnailsBox?._thumbnails ?? [];
             const contents = thumbnails[wsIndex]?._contents;
             if (contents) {

@@ -16,7 +16,19 @@ export class WallpaperEngineApp {
         this._renderers = new Map(); // monitor index -> MonitorRenderer
     }
 
+    // The shell never disables an extension whose enable() threw, so a failure
+    // after the wallpaper was taken over would leave it taken until a restart:
+    // hand everything back first, then fail as the shell expects.
     enable() {
+        try {
+            this._enable();
+        } catch (e) {
+            this.disable();
+            throw e;
+        }
+    }
+
+    _enable() {
         this._interface = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
         this._hasAccent = this._interface.settings_schema.has_key('accent-color');
         this._system = new SystemState(() => this._push(this._state()));
