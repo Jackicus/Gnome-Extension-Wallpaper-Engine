@@ -1,23 +1,48 @@
-import cairo from 'cairo';
-import { TAU, addScaled, glowSprite, seeded, stampWithAlpha } from '../layer.js';
+import { TAU, seeded } from '../layer.js';
 
-const SCALE = 8;
+const CLOUDS = 14;
+
 const HUES = [
-    [140 / 255, 90 / 255, 255 / 255],
-    [50 / 255, 200 / 255, 220 / 255],
-    [230 / 255, 80 / 255, 180 / 255],
-    [60 / 255, 120 / 255, 255 / 255],
+    [140, 90, 255],
+    [50, 200, 220],
+    [230, 80, 180],
+    [60, 120, 255],
 ];
 
-export class NebulaLayer {
-    constructor() {
-        this._sprites = HUES.map(([r, g, b]) => glowSprite(128, r, g, b, 0));
-        this._low = null;
-        this._lowCr = null;
-        this._clouds = [];
+const rgb = ([r, g, b]) => `vec3(${[r, g, b].map(v => (v / 255).toFixed(4)).join(', ')})`;
+const LANES = ['x', 'y', 'z', 'w'];
 
-        const rand = seeded(41);
-        this._clouds = Array.from({ length: 14 }, (_, i) => ({
+// Fourteen slow clouds, each three overlapping glows: violet, teal, magenta and
+// blue light turning over each other. Where the clouds are is worked out here,
+// once a frame -- fourteen sines -- and the shader only has to add them up.
+// Each cloud's colour is fixed, so the glows are summed as four strengths, one
+// per colour, and the colours applied once at the end.
+export const glsl = `
+uniform vec4 nebula_glow[${CLOUDS * 3}];       // centre, 1 / radius, unused
+
+// The falloff the clouds always had: a soft core and a long tail.
+float nebulaGlow(vec2 p, vec4 g) {
+    vec2 d = (p - g.xy) * g.z;
+    float x = sqrt(dot(d, d));
+    return x < 0.45 ? mix(0.9, 0.28, x / 0.45) : max(0.0, 0.28 * (1.0 - x) / 0.55);
+}
+
+vec4 nebula(vec2 p) {
+    vec4 a = vec4(0.0);
+    ${Array.from({ length: CLOUDS * 3 }, (_, i) =>
+        `a.${LANES[Math.floor(i / 3) % 4]} += nebulaGlow(p, nebula_glow[${i}]) * ${i % 3 ? '0.099' : '0.144'};`).join('\n    ')}
+    return vec4(${HUES.map((h, i) => `${rgb(h)} * a.${LANES[i]}`).join(' + ')}, a.x + a.y + a.z + a.w);
+}
+`;
+
+export class State {
+    constructor(w, h, index) {
+        this._w = w;
+        this._h = h;
+        this._glows = new Array(CLOUDS * 3 * 4).fill(0);
+
+        const rand = seeded(41 + index * 1000);
+        this._clouds = Array.from({ length: CLOUDS }, () => ({
             cx: 0.1 + rand() * 0.8,
             cy: 0.1 + rand() * 0.8,
             ax: 0.08 + rand() * 0.2,
@@ -28,45 +53,29 @@ export class NebulaLayer {
             py: rand() * TAU,
             size: 0.45 + rand() * 0.55,
             pulse: rand() * TAU,
-            hue: i % HUES.length,
             lobes: [rand() - 0.5, rand() - 0.5, rand() - 0.5, rand() - 0.5],
         }));
     }
 
-    resize(w, h) {
-        const lw = Math.max(1, Math.ceil(w / SCALE));
-        const lh = Math.max(1, Math.ceil(h / SCALE));
-        this._low = new cairo.ImageSurface(cairo.Format.ARGB32, lw, lh);
-        this._lowCr = new cairo.Context(this._low);
-    }
-
-    draw(cr, s) {
-        if (!this._low) return;
-        const ow = this._low.getWidth();
-        const oh = this._low.getHeight();
-
-        const lowCr = this._lowCr;
-        lowCr.save();
-        lowCr.setOperator(cairo.Operator.CLEAR);
-        lowCr.paint();
-        lowCr.restore();
-
-        lowCr.save();
-        lowCr.setOperator(cairo.Operator.ADD);
-        const unit = Math.min(ow, oh);
+    uniforms(t) {
+        const g = this._glows;
+        const unit = Math.min(this._w, this._h);
+        let o = 0;
+        const put = (x, y, diameter) => {
+            g[o++] = x;
+            g[o++] = y;
+            g[o++] = 2 / diameter;
+            g[o++] = 0;
+        };
 
         for (const c of this._clouds) {
-            const x = (c.cx + Math.sin(s.t * c.fx + c.px) * c.ax) * ow;
-            const y = (c.cy + Math.sin(s.t * c.fy + c.py) * c.ay) * oh;
-            const size = c.size * unit * (0.92 + 0.08 * Math.sin(s.t * 0.2 + c.pulse));
-            const img = this._sprites[c.hue];
-
-            stampWithAlpha(lowCr, img, x, y, size, 0.16);
-            stampWithAlpha(lowCr, img, x + c.lobes[0] * size * 0.7, y + c.lobes[1] * size * 0.7, size * 0.75, 0.11);
-            stampWithAlpha(lowCr, img, x + c.lobes[2] * size * 0.7, y + c.lobes[3] * size * 0.7, size * 0.6, 0.11);
+            const x = (c.cx + Math.sin(t * c.fx + c.px) * c.ax) * this._w;
+            const y = (c.cy + Math.sin(t * c.fy + c.py) * c.ay) * this._h;
+            const size = c.size * unit * (0.92 + 0.08 * Math.sin(t * 0.2 + c.pulse));
+            put(x, y, size);
+            put(x + c.lobes[0] * size * 0.7, y + c.lobes[1] * size * 0.7, size * 0.75);
+            put(x + c.lobes[2] * size * 0.7, y + c.lobes[3] * size * 0.7, size * 0.6);
         }
-        lowCr.restore();
-
-        addScaled(cr, this._low, s, 0.9);
+        return [['nebula_glow', 4, g]];
     }
 }

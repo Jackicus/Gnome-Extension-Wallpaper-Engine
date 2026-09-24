@@ -1,75 +1,53 @@
-import cairo from 'cairo';
-import { TAU, countFor, seeded, sprite, stampWithAlpha } from '../layer.js';
+// Large out-of-focus lights, fading in, rising softly and fading out again.
+//
+// Wide columns this time, two discs to a column, each living its life somewhere
+// in the frame and the next one born somewhere else. They used to be born below
+// the frame and rarely lived long enough to climb past its lower third; now
+// they fill it.
 
-const TINTS = [
-    [1.0, 236 / 255, 210 / 255],
-    [205 / 255, 225 / 255, 1.0],
-    [235 / 255, 205 / 255, 1.0],
-];
+const COLUMN = 160;         // in U
+const SLOTS = 2;
 
-function discSprite(rgb) {
-    const [r, g, b] = rgb;
-    return sprite(128, (cr, radius) => {
-        const grad = new cairo.RadialGradient(0, 0, 0, 0, 0, radius);
-        grad.addColorStopRGBA(0, r, g, b, 0.32);
-        grad.addColorStopRGBA(0.72, r, g, b, 0.36);
-        grad.addColorStopRGBA(0.9, r, g, b, 0.7);
-        grad.addColorStopRGBA(1, r, g, b, 0);
-        cr.setSource(grad);
-        cr.paint();
-    });
+export const glsl = `
+vec3 bokehTint(float i) {
+    if (i < 1.0 / 3.0) return vec3(1.0, 0.925, 0.824);
+    if (i < 2.0 / 3.0) return vec3(0.804, 0.882, 1.0);
+    return vec3(0.922, 0.804, 1.0);
 }
 
-export class BokehLayer {
-    constructor() {
-        this._sprites = TINTS.map(discSprite);
-        this._discs = [];
-        this._rand = seeded(23);
-    }
+vec4 bokehDisc(vec2 p, float column, float slot) {
+    vec4 life = hash42(vec2(column * 7.3 + u_seed, slot * 29.1 + 3.0));
+    float period = 9.0 + life.x * 9.0;
+    vec2 lc = lifecycle(period, life.y);
+    float f = lc.y;
 
-    _spawn(fresh) {
-        const r = this._rand;
-        const size = 24 + r() * r() * 130;
-        return {
-            x: r(),
-            y: fresh ? r() : 1.1,
-            size,
-            speed: 0.008 + (60 / size) * 0.012,
-            sway: 0.01 + r() * 0.02,
-            swayRate: 0.15 + r() * 0.35,
-            phase: r() * TAU,
-            life: 9 + r() * 9,
-            age: fresh ? r() * 8 : 0,
-            tint: Math.floor(r() * TINTS.length),
-        };
-    }
+    vec4 h = hash42(vec2(column + slot * 0.37 + u_seed, lc.x));
+    float size = 24.0 + h.x * h.x * 130.0;
+    float speed = 0.008 + (60.0 / size) * 0.012;
+    float y = (0.1 + h.z * 1.1 - speed * f * period) * u_res.y;
+    float r = size * 0.5 * U;
+    if (abs(p.y - y) >= r) return vec4(0.0);
 
-    resize(w, h) {
-        this._rand = seeded(23);
-        this._discs = Array.from({ length: countFor(w, h, 26, 8) }, () => this._spawn(true));
-    }
+    vec4 k = hash42(vec2(lc.x * 0.61 + column, slot + 83.0));
+    float sway = (0.01 + k.x * 0.02) * 1920.0 * sin(wphase(0.15 + k.y * 0.35) + k.z * TAU);
+    float x = ((column + 0.5) * ${COLUMN}.0 + (h.y - 0.5) * ${(COLUMN * 0.6).toFixed(1)} + sway) * U;
 
-    draw(cr, s) {
-        cr.save();
-        cr.setOperator(cairo.Operator.ADD);
-
-        for (let i = 0; i < this._discs.length; i++) {
-            const d = this._discs[i];
-            d.age += s.dt;
-            d.y -= d.speed * s.dt;
-            if (d.age > d.life || d.y < -0.2) {
-                this._discs[i] = this._spawn(false);
-                continue;
-            }
-
-            const f = d.age / d.life;
-            const fade = Math.min(1, f * 5, (1 - f) * 5);
-            const x = (d.x + Math.sin(s.t * d.swayRate + d.phase) * d.sway) * s.w;
-            const alpha = fade * (0.08 + 0.1 * (1 - d.size / 160));
-
-            stampWithAlpha(cr, this._sprites[d.tint], x, d.y * s.h, d.size, alpha);
-        }
-
-        cr.restore();
-    }
+    float e = length(p - vec2(x, y)) / r;
+    if (e >= 1.0) return vec4(0.0);
+    // A soft body with a brighter rim, as a lens renders a point out of focus.
+    float a = e < 0.72 ? mix(0.32, 0.36, e / 0.72)
+            : e < 0.9 ? mix(0.36, 0.7, (e - 0.72) / 0.18)
+            : mix(0.7, 0.0, (e - 0.9) / 0.1);
+    float fade = min(1.0, min(f * 5.0, (1.0 - f) * 5.0));
+    return vec4(bokehTint(k.w), 1.0) * a * fade * (0.08 + 0.1 * (1.0 - size / 160.0));
 }
+
+vec4 bokeh(vec2 p) {
+    vec4 c = vec4(0.0);
+    float column = floor(p.x / (${COLUMN}.0 * U));
+    for (int dc = -1; dc <= 1; dc++)
+        for (int s = 0; s < ${SLOTS}; s++)
+            c += bokehDisc(p, column + float(dc), float(s));
+    return c;
+}
+`;

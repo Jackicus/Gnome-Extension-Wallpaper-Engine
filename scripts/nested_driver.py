@@ -50,6 +50,7 @@ KEYSYMS = {
     "Page_Up": 0xFF55, "Page_Down": 0xFF56,
     "Super": 0xFFEB, "Super_L": 0xFFEB, "Alt": 0xFFE9, "Alt_L": 0xFFE9,
     "Control": 0xFFE3, "Ctrl": 0xFFE3, "Shift": 0xFFE1,
+    **{f"F{n}": 0xFFBD + n for n in range(1, 13)},
 }
 
 

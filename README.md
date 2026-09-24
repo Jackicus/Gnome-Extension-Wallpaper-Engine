@@ -18,7 +18,7 @@ Enable any combination of patterns to mix and match simultaneously:
 - **Aurora**: Dancing curtains of northern polar lights with procedural vertical ray noise.
 - **Starfield**: Deep night sky with depth-layered stars, a diagonal galactic band, and meteors.
 - **Embers**: Rising forge sparks with turbulent noise eddies cooling from white-hot to orange to red.
-- **Bokeh**: Large out-of-focus rising lights with sharp rim lighting.
+- **Bokeh**: Large out-of-focus lights fading in, rising softly through the frame, and fading out.
 - **Constellation**: Drifting nodes that dynamically weave and unweave a proximity mesh.
 
 ### 2. Flexible Base Layers
@@ -28,28 +28,25 @@ Enable any combination of patterns to mix and match simultaneously:
 
 ### 3. Preferences Dialog (Libadwaita)
 - Complete settings menu accessible via GNOME Extensions app, Extension Manager, or `make prefs`.
-- Toggle individual patterns, adjust animation speed multiplier, and tune pattern opacity.
-- Configure target frame rate (30 FPS default for battery efficiency, or 60 FPS for maximum smoothness).
-- Automatic power saving: optionally pause animation when fullscreen windows are active or when running on battery.
+- Toggle individual patterns, adjust animation speed, and tune pattern opacity.
+- Frame rate counted in each display's own frames — every frame, every other frame, or about 60 or 30 a second — so motion stays even at any refresh rate.
+- Pauses itself while fullscreen, maximized or tiled windows cover the desktop, and optionally on battery.
 
-### 4. Render Resolution
-Patterns are drawn at a fraction of the screen and scaled back up by the GPU.
-This is by far the biggest lever on CPU use — everything is drawn in software on
-the compositor thread, so the cost scales with the pixel count. Measured on one
-1600×900 monitor at 30 FPS, as a share of one CPU core:
+### 4. Performance
+Every pattern is a GPU shader drawn at the monitor's full resolution; the
+compositor's own thread only sets a few numbers per frame. On a GTX 1080 at
+1920×1080, GPU time per frame:
 
-| Pattern | Full | High (default) | Balanced |
-|---|---|---|---|
-| Aurora | 52% | 30% | 16% |
-| Nebula | 52% | 33% | 22% |
-| Constellation | 11% | 6% | 6% |
+| Pattern | ms | | Pattern | ms |
+|---|---|---|---|---|
+| Wave | 0.13 | | Starfield | 0.20 |
+| Sparkles | 0.15 | | Embers | 0.45 |
+| Nebula | 0.27 | | Bokeh | 0.25 |
+| Aurora | 0.27 | | Constellation | 0.71 |
 
-A 4K display costs roughly four times the above at the same setting, so lower it
-there. The patterns are soft glows and gradients and survive the scaling well;
-the sharp edges (the wave crest, constellation links) are what softens first.
-
-The animation also pauses itself on the lock screen, behind a fullscreen window,
-and — optionally — on battery, and stops entirely when no patterns are enabled.
+All eight together take 2.4ms of a 16.7ms (60Hz) or 4.2ms (240Hz) frame, and
+about 4% of a CPU core at 60 FPS whichever patterns are on. `make bench` measures
+your own GPU.
 
 ---
 
@@ -66,6 +63,10 @@ make prefs
 
 # Reload the extension after code changes
 make reload
+
+# Compile every pattern's shader offline, or time each on the GPU
+make check
+make bench
 
 # Visual testing in a throwaway nested GNOME Shell
 make nested

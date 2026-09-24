@@ -2,12 +2,16 @@ DEV := ./scripts/dev.sh
 NESTED := ./scripts/nested.sh
 
 .PHONY: all link install reload prefs logs uninstall status clean help \
-        nested nested-headless nested-stop nested-status preview
+        check bench nested nested-headless nested-stop nested-status preview
 
 all: install
 
 link install reload prefs logs uninstall status:
 	@$(DEV) $@
+
+# Every pattern's shader, compiled (check) or timed on the GPU (bench), outside the shell.
+check bench:
+	@node scripts/shaders.mjs $@
 
 clean:
 	rm -f src/schemas/gschemas.compiled
@@ -31,5 +35,7 @@ preview:
 
 help:
 	@$(DEV) help
+	@echo
+	@sed -n '4,7p' scripts/shaders.mjs | sed 's|^// ||'
 	@echo
 	@$(NESTED) help

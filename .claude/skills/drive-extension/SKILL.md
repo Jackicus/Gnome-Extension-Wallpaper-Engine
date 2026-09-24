@@ -45,7 +45,7 @@ call, and it stops at the first failing step:
 |---|---|
 | `say TEXT` | Banner in the nested shell (≤ ~40 chars, no apostrophes — steps are shell-split). Put one before every step the user should follow. |
 | `click X Y` / `move X Y` | Click / hover at desktop coordinates |
-| `key KEYSYM` | `Escape`, `Return`, arrows, one character, or a chord like `Super+Page_Down` |
+| `key KEYSYM` | `Escape`, `Return`, arrows, `F1`–`F12`, one character, or a chord like `Super+Page_Down` (`F11` fullscreens most apps; `Alt+F10` maximizes where a tiling extension has taken `Super+Up`) |
 | `wait SECS` | Let something land. An animated pattern never settles, so a wait here is about giving a settings change a frame or two, not about a transition ending. |
 | `shot [FILE [X Y W H]]` | Screenshot, or **just a region** — crop to the part you are judging rather than reading 1600×900 every time |
 | `overview on\|off` | Show/hide the overview. Nothing dismisses it until `off`. |
@@ -118,6 +118,16 @@ the extension's own.
   nested shell runs is silently lost once anything in the nested one writes a
   key. Change settings **before** `start`, **after** `stop`, or through
   `nested.sh run gsettings` — not from the real session mid-run.
+- **The real session can clobber the nested one's writes, too.** A `reload` that
+  fails with "Enabled but not ACTIVE" and nothing in `logs`, or a key set with
+  `run gsettings` that reads back as its old value, is the real session's dconf
+  service rewriting the file from a stale copy. `stop` + `start` recovers; for
+  settings, set them **before** `start` (through the real session's
+  `gsettings --schemadir src/schemas`), not mid-run.
+- **Headless without the mirror never paints.** With nothing consuming frames the
+  compositor does not draw, so a CPU or GPU reading taken under
+  `start --headless` measures nothing. Measure with the mirror on — it adds a
+  constant screencast cost, so compare readings with each other, not with zero.
 - **`start` enables the extension** if dconf doesn't list it — which writes
   `enabled-extensions`, so the real session will load it at the next login too.
 - **Never click or hover at the top-left.** It is the Activities hot corner and

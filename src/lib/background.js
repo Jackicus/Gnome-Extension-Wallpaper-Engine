@@ -23,16 +23,13 @@ import Clutter from 'gi://Clutter';
 import cairo from 'cairo';
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 
-import { PALETTES, paintPalette } from './palettes.js';
+import { PALETTES, paintPalette, paletteStops } from './palettes.js';
 
 const BACKGROUND_SCHEMA = 'org.gnome.desktop.background';
 
 // A palette is a gradient, so it has to be an image: Meta.Background paints a
 // gradient of two colours, ours are four stops on a diagonal.
 const FALLBACK_SIZE = [1920, 1080];
-
-// How long a rendered palette stays in the cache after the last time it was used.
-const PALETTE_CACHE_DAYS = 7;
 
 export class ShellBackground {
     constructor() {
@@ -46,14 +43,12 @@ export class ShellBackground {
         this._holder = null;
         this._source = null;
         this._shellSettings = null;
+        this._applied = null;
 
         this._cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'wallpaper-engine']);
     }
 
-    /**
-     * Whether the base is coming from the shell's background right now. False
-     * means nothing was taken over -- the renderers have to paint their own.
-     */
+    /** Whether the shell is showing our base rather than the user's wallpaper. */
     get active() {
         return this._shellSettings !== null;
     }
@@ -68,6 +63,13 @@ export class ShellBackground {
             this.release();
             return;
         }
+
+        // Every write to these settings, changed or not, has the shell rebuild
+        // and crossfade every wallpaper it shows -- so a base that is already
+        // up is left alone.
+        const key = JSON.stringify(base);
+        if (this.active && key === this._applied) return;
+        this._applied = key;
 
         // Delayed so a change of mode and a change of picture reach the shell
         // as one, and cost one crossfade rather than two.
@@ -92,6 +94,7 @@ export class ShellBackground {
 
         this._source = null;
         this._shellSettings = null;
+        this._applied = null;
 
         if (source && shellSettings) {
             source._settings = shellSettings;
@@ -147,72 +150,34 @@ export class ShellBackground {
      *
      * The name carries a digest of the stops and the size, so an edited palette
      * is a different file rather than the same path with new bytes -- which the
-     * shell's image cache would have to be told about.
+     * shell's image cache would have to be told about. There is no pruning: the
+     * shell watches the file it shows and reloads the wallpaper on any change to
+     * it, even a touch, and eight palettes at a monitor size or two are a few
+     * hundred kilobytes.
      */
     _paletteFile(name) {
         const key = PALETTES[name] ? name : 'Classic Blue';
         const [width, height] = baseSize();
         const digest = GLib.compute_checksum_for_string(
             GLib.ChecksumType.SHA256,
-            JSON.stringify([key, PALETTES[key].stops, width, height]), -1).slice(0, 12);
+            JSON.stringify([PALETTES[key], width, height]), -1).slice(0, 12);
         const path = GLib.build_filenamev([this._cacheDir, `palette-${digest}.png`]);
 
-        if (GLib.file_test(path, GLib.FileTest.EXISTS)) {
-            touch(path);
-            return Gio.File.new_for_path(path).get_uri();
-        }
-
-        try {
-            GLib.mkdir_with_parents(this._cacheDir, 0o755);
-
-            const surface = new cairo.ImageSurface(cairo.Format.RGB24, width, height);
-            const cr = new cairo.Context(surface);
-            paintPalette(cr, key, width, height);
-            cr.$dispose();
-            surface.flush();
-            surface.writeToPNG(path);
-            surface.finish();
-        } catch (e) {
-            console.error(`[WallpaperEngine] Could not render palette ${key}: ${e}`);
-            return null;
-        }
-
-        this._prune(path);
-        return Gio.File.new_for_path(path).get_uri();
-    }
-
-    /**
-     * Every palette ever rendered would otherwise stay in the cache directory.
-     *
-     * Only the long-untouched ones go: a second session (a nested shell, a
-     * second login) may be showing a palette this one has never asked for, and
-     * deleting the file out from under it would leave it with a wallpaper that
-     * no longer exists.
-     */
-    _prune(keep) {
-        const cutoff = GLib.DateTime.new_now_local().add_days(-PALETTE_CACHE_DAYS);
-
-        try {
-            const dir = Gio.File.new_for_path(this._cacheDir);
-            const enumerator = dir.enumerate_children(
-                `${Gio.FILE_ATTRIBUTE_STANDARD_NAME},${Gio.FILE_ATTRIBUTE_TIME_MODIFIED}`,
-                Gio.FileQueryInfoFlags.NONE, null);
-
-            let info;
-            while ((info = enumerator.next_file(null)) !== null) {
-                const name = info.get_name();
-                if (!name.startsWith('palette-') || !name.endsWith('.png')) continue;
-
-                const path = GLib.build_filenamev([this._cacheDir, name]);
-                if (path === keep) continue;
-                if (info.get_modification_date_time()?.compare(cutoff) > 0) continue;
-
-                GLib.unlink(path);
+        if (!GLib.file_test(path, GLib.FileTest.EXISTS)) {
+            try {
+                GLib.mkdir_with_parents(this._cacheDir, 0o755);
+                const surface = new cairo.ImageSurface(cairo.Format.RGB24, width, height);
+                const cr = new cairo.Context(surface);
+                paintPalette(cr, key, width, height);
+                cr.$dispose();
+                surface.writeToPNG(path);
+                surface.finish();
+            } catch (e) {
+                console.error(`[WallpaperEngine] Could not render palette ${key}: ${e}`);
+                return null;
             }
-            enumerator.close(null);
-        } catch (e) {
-            console.warn(`[WallpaperEngine] Could not prune palette cache: ${e}`);
         }
+        return Gio.File.new_for_path(path).get_uri();
     }
 
     /**
@@ -224,10 +189,10 @@ export class ShellBackground {
 
         const source = this._obtainSource();
         // Nothing here is public API. If the shell stops keeping the wallpaper
-        // behind a settings object, the renderers still have their own base
-        // canvas to fall back on -- so this is a missing feature, not a break.
+        // behind a settings object, the patterns still draw -- over the
+        // user's own wallpaper, which is a missing feature, not a break.
         if (!source?._settings) {
-            console.warn('[WallpaperEngine] No background source to take over; painting the base instead');
+            console.warn('[WallpaperEngine] No background source to take over; the base will not change');
             return;
         }
 
@@ -270,23 +235,9 @@ function reloadBackgrounds(source) {
 // A solid stand-in for the gradient, shown for the moment before the image is
 // loaded and if it cannot be.
 function paletteColor(name) {
-    const palette = PALETTES[name] || PALETTES['Classic Blue'];
-    const [, r, g, b] = palette.stops[Math.floor(palette.stops.length / 2)];
-    const hex = v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0');
-    return `#${hex(r)}${hex(g)}${hex(b)}`;
-}
-
-// Marks a cached palette as still in use, so pruning leaves it alone.
-function touch(path) {
-    try {
-        Gio.File.new_for_path(path).set_attribute_uint64(
-            Gio.FILE_ATTRIBUTE_TIME_MODIFIED,
-            GLib.DateTime.new_now_local().to_unix(),
-            Gio.FileQueryInfoFlags.NONE, null);
-    } catch {
-        // A cache file that cannot be touched is one that will be pruned early
-        // and rendered again; not worth a word in the log.
-    }
+    const stops = paletteStops(name);
+    const [, r, g, b] = stops[Math.floor(stops.length / 2)];
+    return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
 // One image serves every monitor, so it is rendered for the largest of them.

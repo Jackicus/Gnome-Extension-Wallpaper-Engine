@@ -1,48 +1,56 @@
-import cairo from 'cairo';
-import { TAU, countFor, glowSprite, seeded, stampWithAlpha } from '../layer.js';
+// Drifting specks of light, nearer ones larger, brighter and faster.
+//
+// Depth comes in four bands, each a grid of cells sliding at its own pace with
+// at most one speck in a cell -- so a pixel only ever looks at the one cell it is
+// in per band, however many specks there are. A speck keeps clear of its cell's
+// edges by more than its glow and its sway, which is what makes one cell enough.
 
-const R = 225 / 255;
-const G = 238 / 255;
-const B = 255 / 255;
+// z range, and the share of the ~90 specks a 1080-line screen holds.
+const BANDS = [
+    [0.0, 0.1, 0.33],
+    [0.1, 0.3, 0.33],
+    [0.3, 0.6, 0.245],
+    [0.6, 1.0, 0.095],
+];
+const COUNT = 90;
+const OCCUPIED = 0.75;
+// The grid repeats after this many cells -- far off screen -- so the distance
+// it has slid can be kept small.
+const REPEAT = 64;
 
-export class SparklesLayer {
-    constructor() {
-        this._glow = glowSprite(48, R, G, B, 0.12);
-        this._specks = [];
-    }
-
-    resize(w, h) {
-        const rand = seeded(7);
-        const count = countFor(w, h, 90);
-        this._specks = Array.from({ length: count }, () => {
-            const z = rand() * rand();
-            return {
-                x: rand(),
-                y: rand(),
-                z,
-                vx: (0.006 + 0.02 * z) * (0.7 + rand() * 0.6),
-                vy: -(0.003 + 0.012 * z) * (0.7 + rand() * 0.6),
-                sw: rand() * TAU,
-                sws: 0.2 + rand() * 0.5,
-            };
-        });
-    }
-
-    draw(cr, s) {
-        cr.save();
-        cr.setOperator(cairo.Operator.ADD);
-
-        for (const p of this._specks) {
-            p.x += p.vx * s.dt + Math.sin(s.t * p.sws + p.sw) * 0.004 * s.dt;
-            p.y += p.vy * s.dt;
-            if (p.x > 1.04) p.x -= 1.08;
-            if (p.x < -0.04) p.x += 1.08;
-            if (p.y < -0.04) p.y += 1.08;
-
-            const alpha = 0.22 + 0.5 * p.z;
-            stampWithAlpha(cr, this._glow, p.x * s.w, p.y * s.h, 3 + p.z * 8, alpha);
-        }
-
-        cr.restore();
-    }
+function band([z0, z1, share], i) {
+    const z = (z0 + z1) / 2;
+    const cell = Math.sqrt(1920 * 1080 * OCCUPIED / (COUNT * share));
+    // In screen widths and heights a second, up and to the right.
+    const vx = 0.006 + 0.02 * z;
+    const vy = -(0.003 + 0.012 * z);
+    return `c += sparkleBand(p, ${i}.0, ${z0.toFixed(2)}, ${z1.toFixed(2)}, ${cell.toFixed(1)}, ` +
+        `vec2(${vx.toFixed(4)}, ${vy.toFixed(4)}));`;
 }
+
+export const glsl = `
+vec4 sparkleBand(vec2 p, float band, float z0, float z1, float cell, vec2 drift) {
+    vec2 q = p / U - scroll(drift * u_res / U, cell * ${REPEAT}.0);
+    vec2 id = mod(floor(q / cell), ${REPEAT}.0);
+    vec2 key = id + vec2(band * 71.3 + u_seed, band * 19.7);
+    vec4 h = hash42(key);
+    if (h.x > ${OCCUPIED.toFixed(2)}) return vec4(0.0);
+
+    // Nothing to draw this far from where the speck's sway can take it.
+    float margin = 5.5 + 12.0 + 2.0;
+    vec2 at = floor(q / cell) * cell + margin + h.zw * (cell - 2.0 * margin);
+    vec2 off = q - at;
+    if (abs(off.y) > 6.0 || abs(off.x) > 18.0) return vec4(0.0);
+
+    vec4 k = hash42(key + 37.1);
+    float z = mix(z0, z1, h.y);
+    off.x -= 12.0 * sin(wphase(0.2 + 0.5 * k.x) + k.y * TAU);
+    return glow(length(off) * U, (1.5 + 4.0 * z) * U, vec3(0.882, 0.933, 1.0), 0.12) * (0.22 + 0.5 * z);
+}
+
+vec4 sparkles(vec2 p) {
+    vec4 c = vec4(0.0);
+    ${BANDS.map(band).join('\n    ')}
+    return c;
+}
+`;

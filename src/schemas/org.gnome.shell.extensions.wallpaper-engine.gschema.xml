@@ -23,18 +23,8 @@
     </key>
     <key name="target-fps" type="i">
       <default>0</default>
-      <summary>Target frame rate</summary>
-      <description>How often the patterns are redrawn. 0 follows the display's own refresh rate, and a negative follows a fraction of it (-2 is every other frame, -3 every third); a positive number is that many frames per second regardless of the display. Native pacing backs itself off if drawing starts taking too much of the compositor.</description>
-    </key>
-    <key name="cpu-budget" type="d">
-      <default>0.5</default>
-      <summary>CPU the patterns may use</summary>
-      <description>How much of one CPU core the drawing is allowed to cost, counting the compositing it causes (0.25 to 1.0, or 0 for no limit). Only applies when target-fps follows the display: the clock paints on fewer of the display's frames until it fits, and on more again when the load falls.</description>
-    </key>
-    <key name="render-scale" type="d">
-      <default>0.75</default>
-      <summary>Render resolution scale</summary>
-      <description>Fraction of the monitor resolution the patterns are drawn at before the GPU scales them back up (0.25 to 1.0). Lower is cheaper and softer.</description>
+      <summary>Frame rate</summary>
+      <description>How often the patterns are redrawn, in step with each display's own refresh: 0 is every frame it shows, a negative number every Nth frame (-2 every other one), and a positive number the nearest whole share of the display's rate to that many frames a second.</description>
     </key>
     <key name="speed" type="d">
       <default>1.0</default>
@@ -46,15 +36,15 @@
       <summary>Pattern opacity</summary>
       <description>Global opacity of the animated patterns (0.1 to 1.0).</description>
     </key>
-    <key name="pause-on-fullscreen" type="b">
+    <key name="pause-when-covered" type="b">
       <default>true</default>
-      <summary>Pause when fullscreen window is active</summary>
-      <description>Stops drawing while a fullscreen window is visible to save GPU and CPU power.</description>
+      <summary>Pause while windows cover the desktop</summary>
+      <description>Stops drawing on a monitor while a fullscreen window, or maximized and tiled windows between them, hide its desktop.</description>
     </key>
     <key name="pause-on-battery" type="b">
       <default>false</default>
       <summary>Pause on battery power</summary>
-      <description>Stops or reduces animations when the device is running on battery.</description>
+      <description>Stops the animation while the device is running on battery.</description>
     </key>
   </schema>
 </schemalist>

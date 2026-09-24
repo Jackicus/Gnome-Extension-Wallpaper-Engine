@@ -105,9 +105,7 @@ export class OverviewCanvas {
 
     // The layout changed under an open overview.
     invalidate() {
-        if (!this._attached) return;
-        this._detach();
-        this._attach();
+        if (this._attached) this._attach();
     }
 
     /**
@@ -132,6 +130,9 @@ export class OverviewCanvas {
     }
 
     _attach() {
+        // 'showing' can follow an attach made at enable, when the overview
+        // already claimed to be up; clones stacked twice would double the light.
+        this._detach();
         this._attached = true;
 
         const monitors = Main.layoutManager.monitors;

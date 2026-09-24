@@ -1,88 +1,53 @@
-import cairo from 'cairo';
-import { addScaled, makeNoise } from '../layer.js';
-
-const SCALE = 5;
-// Curtains are painted one strip at a time into the low-res buffer, and each
-// strip is a cairo paint of its own. The buffer is blown up by SCALE on the way
-// out, so strips narrower than this cost paint calls for detail nothing can see.
-const STRIDE = 2;
+// Green and violet curtains of polar light, hanging and rippling across the
+// sky, streaked with rays.
+//
+// Each curtain is one line of noise along the width: where it hangs, how long
+// it is, how bright each ray. A pixel only has to ask that of its own column,
+// and shade the curtain's vertical gradient at its height.
 
 const CURTAINS = [
-    { rgb: [150 / 255, 110 / 255, 255 / 255], hang: 0.34, wander: 0.14, minLen: 0.16, maxLen: 0.5, alpha: 0.55, drift: 0.018, seed: 31 },
-    { rgb: [70 / 255, 235 / 255, 160 / 255], hang: 0.42, wander: 0.1, minLen: 0.1, maxLen: 0.36, alpha: 0.85, drift: 0.03, seed: 17 },
+    { rgb: [150, 110, 255], hang: 0.34, wander: 0.14, minLen: 0.16, maxLen: 0.5, alpha: 0.55, drift: 0.018, seed: 31 },
+    { rgb: [70, 235, 160], hang: 0.42, wander: 0.1, minLen: 0.1, maxLen: 0.36, alpha: 0.85, drift: 0.03, seed: 17 },
 ];
 
-function curtainStrip(rgb) {
-    const [r, g, b] = rgb;
-    const strip = new cairo.ImageSurface(cairo.Format.ARGB32, 1, 128);
-    const cr = new cairo.Context(strip);
-    const grad = new cairo.LinearGradient(0, 0, 0, 128);
-    grad.addColorStopRGBA(0, r, g, b, 0);
-    grad.addColorStopRGBA(0.5, r, g, b, 0.22);
-    grad.addColorStopRGBA(0.9, r, g, b, 0.9);
-    grad.addColorStopRGBA(1, r, g, b, 0.15);
-    cr.setSource(grad);
-    cr.paint();
-    return strip;
+const num = x => x.toFixed(4);
+
+const curtain = c => `c += auroraCurtain(p, vec3(${c.rgb.map(v => num(v / 255)).join(', ')}), ` +
+    `${num(c.hang)}, ${num(c.wander)}, ${num(c.minLen)}, ${num(c.maxLen)}, ${num(c.alpha)}, ` +
+    `${num(c.drift)}, ${c.seed}.0);`;
+
+export const glsl = `
+vec4 auroraCurtain(vec2 p, vec3 rgb, float hang, float wander, float minLen, float maxLen,
+                   float alpha, float pace, float seed) {
+    // Rows no curtain of this height and sway can reach cost nothing.
+    float row = p.y / u_res.y;
+    if (row > hang + wander + 0.01 || row < hang - wander - maxLen) return vec4(0.0);
+
+    vec2 o = vec2(seed * 7.31 + u_seed, seed * 3.17);
+    float u = p.x / u_res.x;
+
+    float sag = fbm(vec2(u * 1.6 + drift(pace), 3.3 + drift(0.02)) + o) - 0.5;
+    float bottom = (hang + sag * 2.0 * wander) * u_res.y;
+    if (p.y > bottom + 5.0 * U) return vec4(0.0);
+
+    float len = fbm(vec2(u * 2.4 - drift(pace * 1.3), 9.0 + drift(0.05)) + o);
+    float height = (minLen + (maxLen - minLen) * len) * u_res.y;
+    float g = (p.y - (bottom - height)) / height;
+    if (g < 0.0) return vec4(0.0);
+    float rays = vnoise(vec2(u * 38.0 + drift(0.12), 20.0 + drift(0.35)) + o);
+
+    // Faint at the top, brightest just above the hem, and a soft hem under it.
+    float a = g < 0.5 ? mix(0.0, 0.22, g / 0.5)
+            : g < 0.9 ? mix(0.22, 0.9, (g - 0.5) / 0.4)
+            : g < 1.0 ? mix(0.9, 0.15, (g - 0.9) / 0.1)
+            : 0.15 * max(0.0, 1.0 - (p.y - bottom) / (5.0 * U));
+    float breathe = 0.75 + 0.25 * sin(wphase(0.13));
+    return vec4(rgb, 1.0) * a * alpha * breathe * (0.3 + 0.7 * rays) * 0.85;
 }
 
-export class AuroraLayer {
-    constructor() {
-        this._strips = CURTAINS.map(c => curtainStrip(c.rgb));
-        this._noises = CURTAINS.map(c => makeNoise(c.seed));
-        this._low = null;
-        this._lowCr = null;
-    }
-
-    resize(w, h) {
-        const lw = Math.max(1, Math.ceil(w / SCALE));
-        const lh = Math.max(1, Math.ceil(h / SCALE));
-        this._low = new cairo.ImageSurface(cairo.Format.ARGB32, lw, lh);
-        this._lowCr = new cairo.Context(this._low);
-    }
-
-    draw(cr, s) {
-        if (!this._low) return;
-        const ow = this._low.getWidth();
-        const oh = this._low.getHeight();
-
-        const lowCr = this._lowCr;
-        lowCr.save();
-        lowCr.setOperator(cairo.Operator.CLEAR);
-        lowCr.paint();
-        lowCr.restore();
-
-        lowCr.save();
-        lowCr.setOperator(cairo.Operator.ADD);
-
-        const breathe = 0.75 + 0.25 * Math.sin(s.t * 0.13);
-        for (let c = 0; c < CURTAINS.length; c++) {
-            const cur = CURTAINS[c];
-            const noise = this._noises[c];
-            const strip = this._strips[c];
-            const shift = s.t * cur.drift;
-
-            for (let x = 0; x < ow; x += STRIDE) {
-                const u = x / ow;
-                const hang = noise.fbm(u * 1.6 + shift, 3.3 + s.t * 0.02) - 0.5;
-                const len = noise.fbm(u * 2.4 - shift * 1.3, 9 + s.t * 0.05);
-                const rays = noise.at(u * 38 + s.t * 0.12, 20 + s.t * 0.35);
-                const bottom = (cur.hang + hang * 2 * cur.wander) * oh;
-                const height = (cur.minLen + (cur.maxLen - cur.minLen) * len) * oh;
-                const alpha = cur.alpha * breathe * (0.3 + 0.7 * rays);
-
-                if (height > 1 && alpha > 0.01) {
-                    lowCr.save();
-                    lowCr.translate(x, bottom - height);
-                    lowCr.scale(Math.min(STRIDE, ow - x), height / 128);
-                    lowCr.setSourceSurface(strip, 0, 0);
-                    lowCr.paintWithAlpha(alpha);
-                    lowCr.restore();
-                }
-            }
-        }
-        lowCr.restore();
-
-        addScaled(cr, this._low, s, 0.85);
-    }
+vec4 aurora(vec2 p) {
+    vec4 c = vec4(0.0);
+    ${CURTAINS.map(curtain).join('\n    ')}
+    return c;
 }
+`;
