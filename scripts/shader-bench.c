@@ -1,11 +1,13 @@
-// Times one fragment shader on the GPU, headless: a full-screen quad into a
-// W x H framebuffer, FRAMES times, with GL_TIME_ELAPSED around each draw.
-// Prints the mean milliseconds per frame. Built and driven by shaders.mjs.
+// Runs one fragment shader on the GPU, headless: a full-screen quad into a
+// W x H framebuffer. Built and driven by shaders.mjs.
 //
-//   shader-bench shader.frag uniforms.txt W H FRAMES
+//   shader-bench shader.frag uniforms.txt W H FRAMES           times it
+//   shader-bench shader.frag uniforms.txt W H 1 image.rgba     draws it once
 //
-// uniforms.txt holds one "name components v1 v2 ..." per line. u_res and
-// u_time are set here: the size, and a clock that advances a 60th a frame.
+// uniforms.txt holds one "name components v1 v2 ..." per line. Timing draws
+// FRAMES frames with GL_TIME_ELAPSED around each, advancing u_time a 60th of a
+// second a frame from the value given, and prints the mean milliseconds per
+// frame. Drawing writes the frame's RGBA, bottom row first, to image.rgba.
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #define GL_GLEXT_PROTOTYPES
@@ -73,7 +75,7 @@ static int make_context(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 6) { fprintf(stderr, "usage: shader-bench shader.frag uniforms.txt W H FRAMES\n"); return 1; }
+    if (argc < 6) { fprintf(stderr, "usage: shader-bench shader.frag uniforms.txt W H FRAMES [image.rgba]\n"); return 1; }
     int W = atoi(argv[3]), H = atoi(argv[4]), frames = atoi(argv[5]);
     if (!make_context()) { fprintf(stderr, "no hardware GL context\n"); return 1; }
 
@@ -117,6 +119,7 @@ int main(int argc, char **argv) {
     char name[128];
     int comps;
     static float v[4096];
+    float time0 = 0;
     while (fscanf(u, "%127s %d", name, &comps) == 2) {
         int count = 0;
         char c = 0;
@@ -124,6 +127,7 @@ int main(int argc, char **argv) {
             count++;
             if (c == '\n') break;
         }
+        if (!strcmp(name, "u_time") && count) time0 = v[0];
         GLint loc = glGetUniformLocation(prog, name);
         if (loc < 0 || comps < 1 || comps > 4) continue;
         int k = count / comps;
@@ -133,8 +137,19 @@ int main(int argc, char **argv) {
         else glUniform4fv(loc, k, v);
     }
     fclose(u);
-    glUniform2f(glGetUniformLocation(prog, "u_res"), W, H);
     GLint time = glGetUniformLocation(prog, "u_time");
+
+    if (argc > 6) {
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        unsigned char *pixels = malloc((size_t)W * H * 4);
+        glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        FILE *out = fopen(argv[6], "wb");
+        if (!out || fwrite(pixels, 4, (size_t)W * H, out) != (size_t)W * H) { perror(argv[6]); return 1; }
+        fclose(out);
+        return 0;
+    }
 
     // Two queries in flight, each read a frame late, so reading one never
     // stalls the frame being timed. The first frames warm the clocks up.
@@ -143,7 +158,7 @@ int main(int argc, char **argv) {
     double total = 0;
     int counted = 0;
     for (int i = 0; i < frames; i++) {
-        glUniform1f(time, 100.0f + i / 60.0f);
+        glUniform1f(time, time0 + i / 60.0f);
         glBeginQuery(GL_TIME_ELAPSED, q[i & 1]);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glEndQuery(GL_TIME_ELAPSED);

@@ -21,6 +21,11 @@ const INSET = WANDER + 2;
 const SPEED = 9;                                    // U a second
 const REPEAT = 64;
 
+// Fewer points, down to a quarter: a cell holds one point at most. Each has
+// its own threshold, and fades out -- dot shrinking, links dimming -- over a
+// narrow band of the setting as it passes, rather than vanishing.
+export const density = [0.25, 1];
+
 const POINTS = Array.from({ length: GRIDS * 4 }, (_, n) => n);
 const grid = n => Math.floor(n / 4);
 
@@ -36,18 +41,21 @@ vec2 constellationShift(float g) {
     return scroll(${SPEED}.0 * vec2(cos(angle), sin(angle)), ${CELL * REPEAT}.0) + g * vec2(97.3, 53.9);
 }
 
-// A point: where it is (xy), its size (z), and how far it is from q (w).
+// A point: where it is (xy), its size (z; 0 when thinned out), and how far it
+// is from q (w; out of reach when thinned out).
 vec4 constellationPoint(vec2 q, vec2 shift, vec2 id, float g) {
     vec4 h = hash42(mod(id, ${REPEAT}.0) + vec2(u_seed + g * 31.7, 5.0));
     float w = 0.05 + 0.1 * fract(h.w * 7.31);
     vec2 wander = ${WANDER}.0 * vec2(sin(wphase(w) + h.z * TAU), cos(wphase(w * 1.3) + h.w * TAU));
     vec2 at = shift + id * ${CELL}.0 + ${INSET}.0 + h.xy * ${CELL - INSET * 2}.0 + wander;
-    return vec4(at, 3.0 + fract(h.z * 13.7) * 4.0, length(q - at));
+    float here = clamp((u_density - fract(h.z * 31.7 + h.w * 17.3)) * 20.0 + 1.0, 0.0, 1.0);
+    return vec4(at, (3.0 + fract(h.z * 13.7) * 4.0) * here, here > 0.0 ? length(q - at) : 1e6);
 }
 
 vec4 constellationLink(vec2 q, vec4 a, vec4 b) {
     float near = max(0.0, 1.0 - length(a.xy - b.xy) / ${LINK}.0);
-    return vec4(0.784, 0.871, 1.0, 1.0) * 0.28 * near * near * line(segmentDistance(q, a.xy, b.xy) * U, U);
+    float fading = min(1.0, min(a.z, b.z) / 3.0);
+    return vec4(0.784, 0.871, 1.0, 1.0) * 0.28 * near * near * fading * line(segmentDistance(q, a.xy, b.xy) * U, U);
 }
 
 vec4 constellation(vec2 p) {

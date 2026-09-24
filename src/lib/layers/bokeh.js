@@ -6,7 +6,11 @@
 // they fill it.
 
 const COLUMN = 160;         // in U
-const SLOTS = 2;
+const SLOTS = 2;            // discs per column at any moment, as designed
+const MOST = 4;             // and at the most Amount allows
+
+// One disc a column up to four; the last fades in with the setting.
+export const density = [1 / SLOTS, MOST / SLOTS];
 
 export const glsl = `
 vec3 bokehTint(float i) {
@@ -24,7 +28,7 @@ vec4 bokehDisc(vec2 p, float column, float slot) {
     vec4 h = hash42(vec2(column + slot * 0.37 + u_seed, lc.x));
     float size = 24.0 + h.x * h.x * 130.0;
     float speed = 0.008 + (60.0 / size) * 0.012;
-    float y = (0.1 + h.z * 1.1 - speed * f * period) * u_res.y;
+    float y = (0.1 + h.z * 1.1 - speed * f * period) * u_canvas.y;
     float r = size * 0.5 * U;
     if (abs(p.y - y) >= r) return vec4(0.0);
 
@@ -45,9 +49,14 @@ vec4 bokehDisc(vec2 p, float column, float slot) {
 vec4 bokeh(vec2 p) {
     vec4 c = vec4(0.0);
     float column = floor(p.x / (${COLUMN}.0 * U));
-    for (int dc = -1; dc <= 1; dc++)
-        for (int s = 0; s < ${SLOTS}; s++)
-            c += bokehDisc(p, column + float(dc), float(s));
+    // Slot by slot, each behind a test on the Amount setting alone, so every
+    // pixel takes the same way and the code stays straight-line.
+    for (int dc = -1; dc <= 1; dc++) {
+        float col = column + float(dc);
+        ${Array.from({ length: MOST }, (_, s) => s < SLOTS
+            ? `c += bokehDisc(p, col, ${s}.0)${s === SLOTS - 1 ? ` * clamp(${SLOTS}.0 * u_density - ${s}.0, 0.0, 1.0)` : ''};`
+            : `if (${SLOTS}.0 * u_density > ${s}.0) c += bokehDisc(p, col, ${s}.0) * clamp(${SLOTS}.0 * u_density - ${s}.0, 0.0, 1.0);`).join('\n        ')}
+    }
     return c;
 }
 `;

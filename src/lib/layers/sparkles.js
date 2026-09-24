@@ -18,19 +18,23 @@ const OCCUPIED = 0.75;
 // it has slid can be kept small.
 const REPEAT = 64;
 
+// More specks are smaller cells: down to a quarter as many, up to twice.
+export const density = [0.25, 2];
+
 function band([z0, z1, share], i) {
     const z = (z0 + z1) / 2;
     const cell = Math.sqrt(1920 * 1080 * OCCUPIED / (COUNT * share));
-    // In screen widths and heights a second, up and to the right.
-    const vx = 0.006 + 0.02 * z;
-    const vy = -(0.003 + 0.012 * z);
+    // In 1080-line pixels a second, up and to the right.
+    const vx = (0.006 + 0.02 * z) * 1920;
+    const vy = -(0.003 + 0.012 * z) * 1080;
     return `c += sparkleBand(p, ${i}.0, ${z0.toFixed(2)}, ${z1.toFixed(2)}, ${cell.toFixed(1)}, ` +
-        `vec2(${vx.toFixed(4)}, ${vy.toFixed(4)}));`;
+        `vec2(${vx.toFixed(2)}, ${vy.toFixed(2)}));`;
 }
 
 export const glsl = `
-vec4 sparkleBand(vec2 p, float band, float z0, float z1, float cell, vec2 drift) {
-    vec2 q = p / U - scroll(drift * u_res / U, cell * ${REPEAT}.0);
+vec4 sparkleBand(vec2 p, float band, float z0, float z1, float designCell, vec2 drift) {
+    float cell = designCell / sqrt(u_density);
+    vec2 q = p / U - scroll(drift, cell * ${REPEAT}.0);
     vec2 id = mod(floor(q / cell), ${REPEAT}.0);
     vec2 key = id + vec2(band * 71.3 + u_seed, band * 19.7);
     vec4 h = hash42(key);

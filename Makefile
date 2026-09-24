@@ -2,12 +2,16 @@ DEV := ./scripts/dev.sh
 NESTED := ./scripts/nested.sh
 
 .PHONY: all link install reload prefs logs uninstall status clean help \
-        check bench nested nested-headless nested-stop nested-status preview
+        check bench nested nested-headless nested-stop nested-status preview zip
 
 all: install
 
 link install reload prefs logs uninstall status:
 	@$(DEV) $@
+
+# The extensions.gnome.org upload, in dist/.
+zip:
+	@$(DEV) pack
 
 # Every pattern's shader, compiled (check) or timed on the GPU (bench), outside the shell.
 check bench:

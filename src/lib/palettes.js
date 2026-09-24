@@ -13,15 +13,40 @@ export const PALETTES = {
     'Nebula': [[0.0, 12, 6, 28], [0.4, 28, 12, 54], [0.7, 42, 18, 78], [1.0, 8, 4, 20]],
 };
 
+// GNOME's accent colours (org.gnome.desktop.interface accent-color, from GNOME
+// 47), as libadwaita draws them.
+const ACCENTS = {
+    blue: [53, 132, 228],
+    teal: [33, 144, 164],
+    green: [58, 148, 74],
+    yellow: [200, 136, 0],
+    orange: [237, 91, 0],
+    red: [230, 45, 66],
+    pink: [213, 97, 153],
+    purple: [145, 65, 172],
+    slate: [111, 131, 150],
+};
+
 /** The stops of a palette, falling back to the default for an unknown name. */
 export function paletteStops(name) {
     return PALETTES[name] ?? PALETTES['Classic Blue'];
 }
 
-/** Paints a palette's gradient over w x h. */
-export function paintPalette(cr, name, w, h) {
+/**
+ * A gradient in the user's accent colour: the same shape and depth as the
+ * palettes -- Classic Blue is very nearly what the blue accent gives -- so a
+ * pattern designed over one sits as well over the other.
+ */
+export function accentStops(accent) {
+    const rgb = ACCENTS[accent] ?? ACCENTS.blue;
+    return [[0.0, 0.11], [0.4, 0.27], [0.7, 0.4], [1.0, 0.2]]
+        .map(([offset, depth]) => [offset, ...rgb.map(v => Math.round(v * depth))]);
+}
+
+/** Paints a gradient of [offset, r, g, b] stops over w x h. */
+export function paintGradient(cr, stops, w, h) {
     const grad = new cairo.LinearGradient(w * 0.1, 0, w * 0.9, h);
-    for (const [offset, r, g, b] of paletteStops(name))
+    for (const [offset, r, g, b] of stops)
         grad.addColorStopRGBA(offset, r / 255, g / 255, b / 255, 1.0);
     cr.save();
     cr.setOperator(cairo.Operator.SOURCE);

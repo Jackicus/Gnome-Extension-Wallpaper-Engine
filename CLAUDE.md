@@ -16,41 +16,58 @@ edits and `reload` into it, and `make nested-stop` when finished.
 Shader mistakes are silent in the shell — a pattern that fails to compile just
 draws nothing — so **`make check` before reloading** after touching any GLSL: it
 compiles every pattern offline, in each GLSL dialect Cogl may use, and names the
-line. `make bench` times each pattern on the real GPU.
+line. `make bench` times each pattern on the real GPU, and
+`node scripts/shaders.mjs render PATTERN` draws frames of one to a PNG with no
+shell at all — the quick loop for a pattern's look, and the one that works
+while something else has the nested shell.
 
-`make` targets just delegate to `scripts/dev.sh` (install/reload/logs/prefs),
-`scripts/nested.sh` (the nested shell) and `scripts/shaders.mjs` (check/bench).
-New logic goes in those, not the Makefile.
+`make` targets just delegate to `scripts/dev.sh` (install/reload/logs/prefs/
+pack), `scripts/nested.sh` (the nested shell) and `scripts/shaders.mjs`
+(check/bench/render). New logic goes in those, not the Makefile.
+
+`docs/` holds what is not about working on the code day to day:
+**`docs/patterns.md` — the contract a pattern keeps, read it before writing or
+changing one**; `docs/private-api.md` (every reach into shell internals);
+`docs/compatibility.md` (what has been tested where); `docs/publishing.md`
+(making the extensions.gnome.org zip).
 
 ## Layout
 
-`src/` is an **exact mirror of the installed extension directory** — `make link`
-symlinks it, so adding a file there ships it, with no list to keep in sync.
+`src/` is **exactly what ships**: `make zip` packs it, `make install` copies it,
+and adding a file there ships it, with no list to keep in sync. `make link`
+builds the development install instead — a directory of links into `src/`,
+except that its entry point is `scripts/dev-extension.js`.
 
-- `extension.js` — the shell's entry point; imports `lib/app.js`. GJS keeps a
-  module for the life of the shell, keyed by URL, so under a **dev link** (a
-  symlinked install) it copies `lib/` to a fresh
-  `$XDG_RUNTIME_DIR/wallpaper-engine/lib-<stamp>/` on every enable, which is what
-  makes `make reload` pick up edits. A real install imports `lib/` in place, once,
-  so its shaders are compiled once and reused across every lock and unlock.
-- `lib/app.js` — reads settings, builds one `MonitorRenderer` per monitor into
-  `Main.layoutManager._backgroundGroup` (over the wallpaper, under the windows),
-  rebuilds on `monitors-changed`, and pushes new state on any settings change.
+- `extension.js` — the shipped entry point, and all it does is import
+  `lib/app.js` and enable it. GJS keeps a module for the life of the shell, keyed
+  by URL, which is right for an install: the shaders are compiled once and
+  reused across every lock and unlock. For development it would mean an edit is
+  never picked up without logging out, so the link's entry point,
+  `scripts/dev-extension.js`, copies `lib/` to a fresh
+  `$XDG_RUNTIME_DIR/wallpaper-engine/lib-<stamp>/` on every enable and imports
+  from there — which is what makes `make reload` work. Nothing of it ships.
+- `lib/app.js` — reads settings, works out what each monitor draws (its own
+  canvas, or its part of one spanning all of them), builds one `MonitorRenderer`
+  per monitor into `Main.layoutManager._backgroundGroup` (over the wallpaper,
+  under the windows), rebuilds on `monitors-changed` and `span-monitors`, and
+  pushes new state on any other settings change.
 - `lib/engine.js` — `MonitorRenderer`: a monitor-sized actor with one child per
-  enabled pattern, each painted by that pattern's shader effect; the frame pacing;
-  and `SceneClock`, the one animation clock every monitor shares.
+  enabled pattern, each painted by that pattern's shader effect and faded in and
+  out as it is switched; the frame pacing; and `SceneClock`, one clock per
+  pattern (for its own speed), shared by every monitor.
 - `lib/shader.js` — wraps a pattern's GLSL in a `Shell.GLSLEffect` class (one per
   pattern, compiled on first use and shared by every monitor), plus the GLSL every
   pattern gets: hashes, value noise, `glow()`, `line()`, and the time helpers.
 - `lib/catalog.js` — **the single list of patterns**: id, title, description, and
-  the layer module. `prefs.js` builds its switches from it and the engine draws in
-  its order, so adding a pattern is a file in `lib/layers/`, an entry here, and
-  nothing else.
-- `lib/layers/*.js` — one pattern each. A module exports `glsl`, defining
-  `vec4 <id>(vec2 p)` — a pixel in monitor coordinates to a premultiplied colour —
-  and, only if the shader needs something worked out on the CPU each frame, a
-  `State` class whose `uniforms(t)` returns `[name, components, values]` triples
-  (wave's crest peaks, nebula's cloud positions, starfield's meteor).
+  the layer module, in the order they are drawn (sky first, weather last).
+  `prefs.js` builds its rows from it and the engine draws in its order, so adding
+  a pattern is a file in `lib/layers/`, an entry here, and nothing else.
+- `lib/layers/*.js` — one pattern each, keeping the contract in
+  `docs/patterns.md`: `glsl` defining `vec4 <id>(vec2 p)`, a canvas pixel to a
+  premultiplied colour; `density`, the range of its Amount setting, if it has
+  one; and, only if the shader needs something worked out on the CPU each frame,
+  a `State` whose `uniforms(t, density)` is a pure function of time (wave's
+  crest peaks, nebula's cloud positions, starfield's meteor).
 - `lib/background.js` — **the base, handed to the shell instead of painted.**
   Every wallpaper the shell shows comes from one `BackgroundSource` reading
   `org.gnome.desktop.background`; this gives that source a `Gio.Settings` of our
@@ -61,26 +78,41 @@ symlinks it, so adding a file there ships it, with no list to keep in sync.
 - `lib/overview.js` — the patterns cloned into the overview's workspace previews,
   its thumbnail strip, and the workspace-slide strip. Without it the desktop goes
   bare the moment any of those appear.
-- `lib/power.js` — a UPower proxy behind `pause-on-battery`, created only while
-  that setting is on.
-- `lib/palettes.js` — the named gradients for `color` mode. `lib/layer.js` — the
-  seeded PRNG for what layers work out on the CPU.
-- `prefs.js`, `schemas/` — the settings dialog and the keys behind it.
+- `lib/system.js` — the system's say: UPower's `OnBattery` (for
+  `pause-on-battery`), power-profiles-daemon's active profile, and St's
+  `enable-animations`.
+- `lib/scenes.js` — the built-in scenes and saving, applying and matching them;
+  used only by prefs. A scene is just the values of `SCENE_KEYS`.
+- `lib/palettes.js` — the named gradients for `color` mode, and the accent
+  colours for `accent`. `lib/layer.js` — the seeded PRNG for what layers work
+  out on the CPU.
+- `prefs.js`, `schemas/` — the settings dialog (Scenes, Patterns, Background,
+  Performance) and the keys behind it.
 
 ## How it fits together
 
 Every pattern is a fragment shader, evaluated at the monitor's full resolution.
 The CPU's part of a frame is setting a few uniforms, so what a pattern costs is
-GPU time — `make bench`; on this desk's GTX 1080 at 1080p the lot is about 2.4ms
-a frame, wave and sparkles 0.3ms — and the compositor thread does the same work
-whichever patterns are on (about 4% of a core at 60 FPS in the nested shell).
+GPU time — `make bench`; on this desk's GTX 1080 at 1080p the patterns take
+0.11–0.65 ms a frame each, all twelve together 3.2 ms and wave and sparkles
+0.26 — and the compositor thread does the same work whichever patterns are on
+(about 4% of a core at 60 FPS in the nested shell).
 
 `background-mode` picks the base — `desktop` (the system wallpaper, left alone),
-`color` (a palette from `palettes.js`) or `image` (a file the user chose); in the
-latter two `background.js` makes it the shell's own wallpaper. `enabled-effects`
-is a list of catalog ids, drawn over that base in catalog order. `speed` scales
-the clock and `opacity` is the monitor actor's opacity, which each shader
-multiplies in.
+`accent` (a gradient in GNOME's accent colour, which it follows as it changes;
+blue before GNOME 47), `color` (a palette from `palettes.js`) or `image` (a file
+the user chose); in all but the first `background.js` makes it the shell's own
+wallpaper, spanned across the monitors when the patterns are. `enabled-effects`
+is a list of catalog ids, drawn over that base in catalog order, each tuned by
+`pattern-tuning` (brightness, speed, Amount, as multipliers of its design).
+`speed` scales every clock and `opacity` is the monitor actor's opacity, which
+each shader multiplies in.
+
+With `span-monitors`, every monitor draws its part of one canvas — the box
+around them all, sized by the primary monitor, one seed — and because every
+`State` is a pure function of time and every clock is shared, the parts agree
+without talking to each other. Scenes are prefs-only: applying one writes a
+handful of keys, and the extension simply follows them.
 
 **Pacing hangs off the paint.** Each pattern's effect calls back from
 `vfunc_paint_target`; the first paint of a frame books the next repaint for
@@ -92,8 +124,10 @@ whole divisor (a rate that does not divide the refresh would judder). Time is
 read at paint, so motion is even however the timer lands.
 
 **A paint that never comes books nothing**, which is how the patterns rest: with
-nothing to show, on battery with `pause-on-battery`, or — `pause-when-covered` —
-while fullscreen, maximized or tiled windows hide the monitor's desktop. The
+nothing to show, while the power-saver profile is on or animations are off
+(always — those are the user's choices for the whole system), on battery with
+`pause-on-battery`, or — `pause-when-covered` — while fullscreen, maximized or
+tiled windows hide the monitor's desktop. The
 next paint of the desktop (a window moving away, the overview opening, a
 setting changing) starts the frames again, so none of those cases needs a signal
 of its own. Paints through a clone (the overview, the workspace slide) never
@@ -101,50 +135,38 @@ count as covered.
 
 ## Rules of thumb
 
+The rules for writing a pattern — coordinates and `U`, the time helpers, Amount,
+`State`, and what makes a shader cheap — are in **`docs/patterns.md`**; read it
+before touching a layer. The ones that are about everything else:
+
 - **Measure with `make bench`, one pattern at a time, before and after.** GPU
   compilers do surprising things, and intuition about which line costs has been
-  wrong more often than right here.
-- **No indexed local arrays in GLSL.** An array written and read in loops is what
-  compilers push out of registers into memory: constellation cost 2.1ms a frame
-  that way and 0.8ms written out as straight-line code (it generates the GLSL from
-  JS for exactly this). Uniform arrays are fine.
-- **Cull before the expensive part.** Most pixels are nowhere near most particles.
-  Work out where a particle is and return early if it is out of reach, before
-  hashing its colour, flicker or wander — that halved sparkles, starfield and
-  embers. Aurora skips the rows no curtain can reach before evaluating any noise.
-- **Let a pixel look at a few candidates, never all of them.** Particles live in
-  a grid of cells (sparkles, starfield), columns of slots (embers, bokeh), or
-  several drifting grids (constellation), sized so a pixel only has to examine its
-  own cell or its neighbours'. Anything that loops over every particle per pixel
-  does not scale.
-- **Time comes in two parts.** A 32-bit float cannot hold an hour of seconds to
-  the precision a frame needs, and past that motion steps unevenly. `u_time` is
-  the seconds since the last 1024-second epoch, `u_epoch` the epoch; use the
-  helpers in `shader.js` — `wphase(w)` for `sin(w·t)`, `scroll(v, period)` for a
-  grid sliding at `v`, `lifecycle(period, phase)` for a repeating life, `drift(a)`
-  for a walk through the (256-periodic) noise — never `u_epoch + u_time` directly
-  for anything that moves. Anything computed in JS uses the double-precision `t`.
-- **Size things in `U`**, one pixel of a 1080-line screen: a pattern then looks the
-  same on any monitor, only sharper on a denser one. Positions are in monitor
-  pixels (`p`, y down) or fractions of `u_res`.
-- **Hashes are seeded, not random.** Every hash mixes in fixed constants (and
-  `u_seed`, which differs per monitor so two screens side by side do not show the
-  same sparkles); anything a `State` works out uses `seeded(n)`. A pattern's
-  layout is then identical across reloads, which is the only way to tell a
-  deliberate visual change from noise in a screenshot.
-- **Glows are never narrower than a pixel.** `glow()` widens and dims a halo or a
-  core that would be sub-pixel, so small lights glide across the pixel grid rather
-  than flickering. Use it for any point of light.
+  wrong more often than right here: indexed local arrays (constellation, 2.1 ms →
+  0.8 as straight-line code), loops with runtime counts (nebula, 0.42 → 0.32
+  unrolled behind uniform tests), a second noise octave that was worth its
+  0.06 ms (aurora's rays).
 - **One shader per pattern.** A shader is compiled for the worst case of all its
   code: all eight patterns in one ran at two thirds the speed of the same eight
-  apart. Each pattern is its own actor and effect, drawn over the previous one.
+  apart. Each pattern is its own actor and effect, drawn over the ones before it.
+- **Every `State` is a pure function of time.** Spanned monitors each run their
+  own, and a monitor that sat paused must pick up exactly where the others are;
+  anything random comes from a hash of an index (starfield's meteors are one per
+  eight-second slot).
+- **Look before calling it done.** `render` is the fast loop; the nested shell,
+  with its mirror, is where motion and the overview are judged, and
+  `start --monitors 2` is the only way to see spanning or the seam between two
+  monitors.
 
 ## Gotchas
 
-- **`extension.js` itself is cached for the life of the shell.** `make reload`
-  picks up everything under `lib/` and the schema; an edit to `extension.js` or
-  `metadata.json` needs a log out / log back in (or `stop` + `start` for the
-  nested shell).
+- **The entry point itself is cached for the life of the shell.** `make reload`
+  picks up everything under `lib/` and the schema; an edit to
+  `scripts/dev-extension.js` or `metadata.json` needs a log out / log back in
+  (or `stop` + `start` for the nested shell). `src/extension.js` only runs from
+  an install or the zip.
+- **Never `gnome-extensions install --force` over the link.** Its recursive
+  delete follows symlinks, into `src/`. `make uninstall` first, which removes
+  only the links.
 - **A new UUID needs a logout** — the shell only scans for unknown extension
   UUIDs at startup. `gnome-extensions info` saying the extension "doesn't exist"
   means exactly that, and no amount of reloading will fix it.
@@ -152,7 +174,7 @@ count as covered.
   symlink, but the shell holds the old modules until the disable/enable cycle.
 - **`glib-compile-schemas src/schemas` after editing the gschema**, then a full
   restart — `reload` alone does not recompile for the nested shell.
-- **GType names outlive modules.** Under a dev link every enable loads `lib/`
+- **GType names outlive modules.** Under the link every enable loads `lib/`
   afresh, so `shader.js` names each load's classes apart; a class registered with
   a fixed name fails the second time with "already registered", and that pattern
   simply does not appear.
@@ -174,6 +196,10 @@ count as covered.
   read true on a plain desktop; that is why pausing asks whether a paint came
   through a clone instead, and why `overview.js` clears its clones before adding
   them.
+- **An actor with a shader effect paints a pixel's margin past its edge.** Two
+  monitors side by side then both paint the column at the seam, which shows as
+  a bright line through anything drawn there; `MonitorRenderer` clips its actor
+  to its allocation for that reason.
 - **Clutter only culls the background when windows cover all of it** — and a
   panel is not a window, so behind a maximized window the strip under the top bar
   keeps the whole monitor repainting. That is what `pause-when-covered` is for.

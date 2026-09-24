@@ -1,15 +1,30 @@
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 import Adw from 'gi://Adw';
+import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 import Gio from 'gi://Gio';
 
 import { EFFECTS } from './lib/catalog.js';
 import { PALETTES } from './lib/palettes.js';
+import { SCENES, SCENE_KEYS, applyScene, deleteScene, isCurrent, saveScene, savedScenes } from './lib/scenes.js';
+
+const tuningOf = settings => settings.get_value('pattern-tuning').deepUnpack();
+
+// One pattern's setting, left out of the dictionary when it is back at 1.
+function writeTuning(settings, id, key, value) {
+    const all = tuningOf(settings);
+    const mine = { ...(all[id] ?? {}) };
+    if (Math.abs(value - 1) < 1e-6) delete mine[key];
+    else mine[key] = value;
+    if (Object.keys(mine).length) all[id] = mine;
+    else delete all[id];
+    settings.set_value('pattern-tuning', new GLib.Variant('a{sa{sd}}', all));
+}
 
 export default class WallpaperEnginePreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
-        window.set_default_size(640, 620);
+        window.set_default_size(640, 700);
         window.set_search_enabled(true);
 
         // Rows that follow a key by hand register here, and the whole lot is
@@ -22,6 +37,7 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         window.connect('close-request', () => settings.disconnect(handlerId));
 
         const ui = { window, settings, watch: (key, fn) => watchers.push([key, fn]) };
+        window.add(this._scenesPage(ui));
         window.add(this._patternsPage(ui));
         window.add(this._backgroundPage(ui));
         window.add(this._performancePage(ui));
@@ -35,7 +51,7 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
      * and without it the write-back can land mid-update -- a combo row reports
      * no selection then, which used to rewrite the key to its first choice.
      */
-    _follow({ settings, watch }, key, show, onUserChange) {
+    _follow({ watch }, key, show, onUserChange) {
         let showing = false;
         const refresh = () => {
             showing = true;
@@ -74,33 +90,116 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         return row;
     }
 
+    _scenesPage(ui) {
+        const { settings } = ui;
+        const page = new Adw.PreferencesPage({ title: 'Scenes', icon_name: 'view-grid-symbolic' });
+
+        // Every scene row shows a tick while its look is the one showing.
+        const ticks = [];
+        const refreshTicks = () => {
+            for (const [scene, tick] of ticks) tick.visible = isCurrent(settings, scene);
+        };
+        for (const key of SCENE_KEYS) ui.watch(key, refreshTicks);
+
+        const sceneRow = (group, scene, suffix) => {
+            const row = new Adw.ActionRow({ title: scene.name, subtitle: scene.desc ?? '', activatable: true });
+            const tick = new Gtk.Image({ icon_name: 'object-select-symbolic', visible: isCurrent(settings, scene) });
+            row.add_suffix(tick);
+            if (suffix) row.add_suffix(suffix);
+            row.connect('activated', () => applyScene(settings, scene));
+            ticks.push([scene, tick]);
+            group.add(row);
+            return row;
+        };
+
+        const builtIn = new Adw.PreferencesGroup({
+            title: 'Scenes',
+            description: 'A whole look in one click: the patterns, how each is tuned, and what they are drawn over. ' +
+                'Frame rate and pausing stay as they are.',
+        });
+        page.add(builtIn);
+        for (const scene of SCENES) sceneRow(builtIn, scene);
+
+        const yours = new Adw.PreferencesGroup({ title: 'Your Scenes' });
+        page.add(yours);
+
+        const save = new Adw.EntryRow({ title: 'Save the current look as…', show_apply_button: true });
+        save.connect('apply', () => {
+            const name = save.text.trim();
+            if (!name) return;
+            saveScene(settings, name);
+            save.text = '';
+        });
+        yours.add(save);
+
+        // Rebuilt whenever the saved list changes, from here or anywhere.
+        let rows = [];
+        const showSaved = () => {
+            for (const row of rows) yours.remove(row);
+            rows = [];
+            ticks.splice(SCENES.length);
+            for (const scene of savedScenes(settings)) {
+                const remove = new Gtk.Button({
+                    icon_name: 'user-trash-symbolic',
+                    tooltip_text: 'Delete this scene',
+                    valign: Gtk.Align.CENTER,
+                    css_classes: ['flat'],
+                });
+                remove.connect('clicked', () => deleteScene(settings, scene.name));
+                rows.push(sceneRow(yours, scene, remove));
+            }
+        };
+        showSaved();
+        ui.watch('saved-scenes', showSaved);
+
+        return page;
+    }
+
     _patternsPage(ui) {
         const { settings } = ui;
         const page = new Adw.PreferencesPage({ title: 'Patterns', icon_name: 'view-wrapped-symbolic' });
 
         const group = new Adw.PreferencesGroup({
-            title: 'Active Patterns',
-            description: 'Any combination can be on at once; they are drawn over each other.',
+            title: 'Patterns',
+            description: 'Any combination can be on at once, drawn over each other. Open one to tune it.',
         });
         page.add(group);
 
         const enabled = () => new Set(settings.get_strv('enabled-effects'));
         for (const effect of EFFECTS) {
-            const row = new Adw.SwitchRow({ title: effect.title, subtitle: effect.desc });
-            row.connect('notify::active', this._follow(ui, 'enabled-effects',
-                () => (row.active = enabled().has(effect.id)),
+            const row = new Adw.ExpanderRow({ title: effect.title, subtitle: effect.desc });
+            const toggle = new Gtk.Switch({ valign: Gtk.Align.CENTER });
+            toggle.connect('notify::active', this._follow(ui, 'enabled-effects',
+                () => (toggle.active = enabled().has(effect.id)),
                 () => {
                     const ids = enabled();
-                    if (row.active) ids.add(effect.id);
+                    if (toggle.active) ids.add(effect.id);
                     else ids.delete(effect.id);
                     // In catalog order, which is the order they are drawn in.
                     settings.set_strv('enabled-effects', EFFECTS.filter(e => ids.has(e.id)).map(e => e.id));
                 }));
+            row.add_suffix(toggle);
+
+            row.add_row(this._tuningRow(ui, effect, 'brightness', 'Brightness (%)', [0.1, 2]));
+            row.add_row(this._tuningRow(ui, effect, 'speed', 'Speed (%)', [0.25, 3]));
+            if (effect.density)
+                row.add_row(this._tuningRow(ui, effect, 'density', 'Amount (%)', effect.density));
+
+            const reset = new Adw.ActionRow({ title: 'Back to how it was designed' });
+            const button = new Gtk.Button({ label: 'Reset', valign: Gtk.Align.CENTER });
+            button.connect('clicked', () => {
+                const all = tuningOf(settings);
+                delete all[effect.id];
+                settings.set_value('pattern-tuning', new GLib.Variant('a{sa{sd}}', all));
+            });
+            reset.add_suffix(button);
+            row.add_row(reset);
+
             group.add(row);
         }
 
-        const tuning = new Adw.PreferencesGroup({ title: 'Tuning' });
-        page.add(tuning);
+        const all = new Adw.PreferencesGroup({ title: 'All Patterns' });
+        page.add(all);
 
         const speed = new Adw.SpinRow({
             title: 'Animation Speed',
@@ -109,7 +208,7 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
             adjustment: new Gtk.Adjustment({ lower: 0.25, upper: 3.0, step_increment: 0.25 }),
         });
         settings.bind('speed', speed, 'value', Gio.SettingsBindFlags.DEFAULT);
-        tuning.add(speed);
+        all.add(speed);
 
         // Stored as a fraction, shown as a percentage.
         const opacity = new Adw.SpinRow({
@@ -120,9 +219,27 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         opacity.connect('notify::value', this._follow(ui, 'opacity',
             () => opacity.set_value(Math.round(settings.get_double('opacity') * 100)),
             () => settings.set_double('opacity', opacity.get_value() / 100)));
-        tuning.add(opacity);
+        all.add(opacity);
+
+        all.add(this._switchRow(ui, 'span-monitors', {
+            title: 'Span All Monitors',
+            subtitle: 'Draw one picture across every monitor, instead of one on each',
+        }));
 
         return page;
+    }
+
+    /** One pattern's brightness, speed or amount, as a percentage of its design. */
+    _tuningRow(ui, effect, key, title, [low, high]) {
+        const { settings } = ui;
+        const row = new Adw.SpinRow({
+            title,
+            adjustment: new Gtk.Adjustment({ lower: low * 100, upper: high * 100, step_increment: 5 }),
+        });
+        row.connect('notify::value', this._follow(ui, 'pattern-tuning',
+            () => row.set_value(Math.round((tuningOf(settings)[effect.id]?.[key] ?? 1) * 100)),
+            () => writeTuning(settings, effect.id, key, row.get_value() / 100)));
+        return row;
     }
 
     _backgroundPage(ui) {
@@ -137,11 +254,16 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         });
         page.add(group);
 
+        // The accent colour came in GNOME 47; before it, the mode draws blue.
+        const hasAccent = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' })
+            .settings_schema.has_key('accent-color');
+
         group.add(this._comboRow(ui, {
             key: 'background-mode',
             title: 'Background',
             choices: [
                 { value: 'desktop', label: 'Desktop Wallpaper' },
+                { value: 'accent', label: hasAccent ? 'Accent Color' : 'Accent Color (Blue)' },
                 { value: 'color', label: 'Color Gradient' },
                 { value: 'image', label: 'Custom Picture' },
             ],
@@ -211,7 +333,9 @@ export default class WallpaperEnginePreferences extends ExtensionPreferences {
         const page = new Adw.PreferencesPage({ title: 'Performance', icon_name: 'utilities-system-monitor-symbolic' });
         const group = new Adw.PreferencesGroup({
             title: 'Frame Rate and Power',
-            description: 'The patterns are drawn by the GPU, in step with each display.',
+            description: 'The patterns are drawn by the GPU, in step with each display. They also rest while ' +
+                'the power saver mode is on, or animations are turned off, since those are choices made for ' +
+                'the whole system.',
         });
         page.add(group);
 

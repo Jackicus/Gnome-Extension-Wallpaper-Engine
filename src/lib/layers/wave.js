@@ -27,17 +27,18 @@ export const glsl = `
 uniform vec3 wave_arg[2];               // each term's phase, per ribbon
 uniform vec3 wave_wobble[2];            // the same for the lower edge's wobble
 uniform vec2 wave_env[2];               // the envelope's and the width's phase
-uniform vec4 wave_bounds;               // each ribbon's highest and lowest point, in screen heights
+uniform vec4 wave_bounds;               // each ribbon's highest and lowest point, in canvas pixels
 uniform vec2 wave_haze;                 // the haze's height and strength
-uniform vec4 wave_glint[${GLINTS * 2}];      // x, y in screen fractions; diameter in U; alpha
+uniform vec4 wave_glint[${GLINTS * 2}];      // x, y in canvas pixels; diameter in U; alpha
 
 const vec3 WAVE_RGB = vec3(0.804, 0.894, 1.0);
 
 vec4 waveRibbon(vec2 p, vec2 span, float base, float amp, float thick, float alpha,
                 vec3 f, vec3 a, vec3 argT, vec3 wobT, vec2 envT) {
-    float W = u_res.x;
-    float H = u_res.y;
-    float x = p.x / W;
+    // Across in screen widths, so a wider canvas gets more of the ribbon
+    // rather than a stretched copy.
+    float H = u_canvas.y;
+    float x = p.x / DESIGN_W;
 
     float ea = x * TAU * 0.5 + envT.x;
     float env = 0.55 + 0.45 * sin(ea);
@@ -50,7 +51,7 @@ vec4 waveRibbon(vec2 p, vec2 span, float base, float amp, float thick, float alp
     float bottom = top + width + wobble * amp * U * 0.22 * env;
 
     // The sheet, lit by a gradient spanning the ribbon's whole height.
-    float g = clamp((p.y - span.x * H) / max((span.y - span.x) * H, 1.0), 0.0, 1.0);
+    float g = clamp((p.y - span.x) / max(span.y - span.x, 1.0), 0.0, 1.0);
     float ga = g < 0.3 ? mix(1.3, 1.0, g / 0.3)
              : g < 0.75 ? mix(1.0, 0.45, (g - 0.3) / 0.45)
              : mix(0.45, 0.0, (g - 0.75) / 0.25);
@@ -61,7 +62,7 @@ vec4 waveRibbon(vec2 p, vec2 span, float base, float amp, float thick, float alp
 
     // The crest: a wide soft stroke under a fine bright one, at the true
     // distance from the curve rather than the vertical one.
-    float slope = amp * U / W * (dot(a * f * TAU, cos(arg)) * env + y * 0.45 * TAU * 0.5 * cos(ea));
+    float slope = amp * U / DESIGN_W * (dot(a * f * TAU, cos(arg)) * env + y * 0.45 * TAU * 0.5 * cos(ea));
     float d = abs(p.y - top) / sqrt(1.0 + slope * slope);
     c += vec4(WAVE_RGB, 1.0) * alpha * 0.55 * line(d, 7.0 * U);
     c += vec4(0.941, 0.973, 1.0, 1.0) * min(1.0, alpha * 2.4) * line(d, 1.2 * U);
@@ -70,14 +71,14 @@ vec4 waveRibbon(vec2 p, vec2 span, float base, float amp, float thick, float alp
 
 vec4 wave(vec2 p) {
     // Ambient haze breathing beneath the ribbons.
-    float hy = (p.y - u_res.y * 0.62) / (wave_haze.x * u_res.y * 0.5);
+    float hy = (p.y - u_canvas.y * 0.62) / (wave_haze.x * u_canvas.y * 0.5);
     vec4 c = vec4(WAVE_RGB, 1.0) * 0.32 * wave_haze.y * max(0.0, 1.0 - abs(hy));
 
     ${RIBBONS.map(ribbon).join('\n    ')}
 
     for (int i = 0; i < ${GLINTS * 2}; i++) {
         vec4 g = wave_glint[i];
-        if (g.w > 0.0) c += glow(length(p - g.xy * u_res), g.z * 0.5 * U, WAVE_RGB, 0.08) * g.w;
+        if (g.w > 0.0) c += glow(length(p - g.xy), g.z * 0.5 * U, WAVE_RGB, 0.08) * g.w;
     }
     return c;
 }
@@ -86,10 +87,17 @@ vec4 wave(vec2 p) {
 const wrap = x => x % TAU;
 
 export class State {
-    // Side by side, two monitors would otherwise show the same ribbon twice.
-    constructor(_w, _h, index) {
-        this._offset = index * 37;
-        this._top = new Float64Array(STEPS + 1);
+    constructor({ width, height, unit, seed, rect }) {
+        this._height = height;
+        this._unit = unit;
+        this._rect = rect;
+        // The canvas in screen widths: the walk covers all of it, so the
+        // gradient's span agrees on every monitor of a spanned picture.
+        this._widths = width / (1920 * unit);
+        this._steps = Math.ceil(STEPS * this._widths);
+        this._top = new Float64Array(this._steps + 1);
+        // Side by side, two monitors would otherwise show the same ribbon twice.
+        this._offset = seed * 2.137;
         this._arg = [0, 0, 0, 0, 0, 0];
         this._wobble = [0, 0, 0, 0, 0, 0];
         this._env = [0, 0, 0, 0];
@@ -120,13 +128,14 @@ export class State {
         ];
     }
 
-    // The same curve the shader draws, in 1080-line pixels.
+    // The same curve the shader draws, in canvas pixels.
     _walk(r, index, t) {
         const top = this._top;
+        const amp = r.amp * this._unit;
         let minY = Infinity;
         let maxY = -Infinity;
 
-        for (let i = 0; i <= STEPS; i++) {
+        for (let i = 0; i <= this._steps; i++) {
             const x = i / STEPS;
             const env = 0.55 + 0.45 * Math.sin(x * TAU * 0.5 + t * 0.09 + r.phase * 0.3);
             let y = 0;
@@ -135,27 +144,33 @@ export class State {
                 y += Math.sin(x * f * TAU + t * v) * a;
                 wobble += Math.sin(x * f * TAU + t * v * 0.8 + 1.1) * a;
             }
-            const yTop = 1080 * r.base + y * r.amp * env;
-            const width = r.thick * (0.12 + 0.88 * Math.abs(Math.sin(x * TAU * 0.45 + t * 0.16 + r.phase)));
-            const bottom = yTop + width + wobble * r.amp * 0.22 * env;
+            const yTop = this._height * r.base + y * amp * env;
+            const width = r.thick * this._unit * (0.12 + 0.88 * Math.abs(Math.sin(x * TAU * 0.45 + t * 0.16 + r.phase)));
+            const bottom = yTop + width + wobble * amp * 0.22 * env;
             top[i] = yTop;
             minY = Math.min(minY, yTop, bottom);
             maxY = Math.max(maxY, yTop, bottom);
         }
-        this._bounds[index * 2] = minY / 1080;
-        this._bounds[index * 2 + 1] = maxY / 1080;
+        this._bounds[index * 2] = minY;
+        this._bounds[index * 2 + 1] = maxY;
 
-        // Glints ride the sharpest peaks of the crest.
+        // Glints ride the sharpest peaks of the crest -- the first few that can
+        // be seen on this monitor, a glint's width either side of it included.
+        const step = 1920 * this._unit / STEPS;
+        const from = this._rect.x - 84 * this._unit;
+        const to = this._rect.x + this._rect.width + 84 * this._unit;
         let placed = 0;
-        for (let i = 2; i < STEPS - 1 && placed < GLINTS; i++) {
+        for (let i = 2; i < this._steps - 1 && placed < GLINTS; i++) {
+            const x = i * step;
+            if (x < from || x > to) continue;
             const y = top[i];
             if (y >= top[i - 1] || y > top[i + 1]) continue;
-            const curve = (top[i - 2] + top[i + 2]) / 2 - y;
+            const curve = ((top[i - 2] + top[i + 2]) / 2 - y) / this._unit;
             if (curve < 0.35) continue;
             const strength = Math.min(1, curve / 3);
             const o = (index * GLINTS + placed) * 4;
-            this._glints[o] = i / STEPS;
-            this._glints[o + 1] = (y + 3) / 1080;
+            this._glints[o] = x;
+            this._glints[o + 1] = y + 3 * this._unit;
             this._glints[o + 2] = 44 + strength * 40;
             this._glints[o + 3] = r.alpha * 3.2 * strength;
             placed++;

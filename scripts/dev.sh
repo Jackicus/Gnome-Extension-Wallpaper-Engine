@@ -2,19 +2,21 @@
 #
 # Wallpaper Engine development helper.
 #
-#   ./scripts/dev.sh link       symlink src/ into the extensions dir (dev mode)
+#   ./scripts/dev.sh link       link src/ into the extensions dir (dev mode)
 #   ./scripts/dev.sh install    copy src/ into the extensions dir (real install)
 #   ./scripts/dev.sh reload     recompile schemas and disable/enable the extension
 #   ./scripts/dev.sh prefs      open the extension settings menu
 #   ./scripts/dev.sh logs [since]  shell logs; follows unless given e.g. '5 min ago'
 #   ./scripts/dev.sh uninstall  remove the extension
 #   ./scripts/dev.sh status     show what is currently installed and enabled
+#   ./scripts/dev.sh pack       build dist/<uuid>.shell-extension.zip for extensions.gnome.org
 #
 set -euo pipefail
 
 UUID="wallpaper-engine@jackt"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$REPO_DIR/src"
+DIST_DIR="$REPO_DIR/dist"
 EXT_ROOT="$HOME/.local/share/gnome-shell/extensions"
 EXT_DIR="$EXT_ROOT/$UUID"
 
@@ -43,12 +45,24 @@ is_enabled() {
     gnome-extensions list --enabled 2>/dev/null | grep -qx "$UUID"
 }
 
+# The extension directory as links into src/ -- except its entry point, which
+# is scripts/dev-extension.js: that one imports lib/ from a fresh copy on every
+# enable, so a reload runs what is on disk. Everything that ships is src/'s own.
+link_tree() {
+    mkdir -p "$EXT_DIR"
+    local entry
+    for entry in "$SRC_DIR"/*; do
+        [[ "$(basename "$entry")" == extension.js ]] && continue
+        ln -s "$entry" "$EXT_DIR/$(basename "$entry")"
+    done
+    ln -s "$REPO_DIR/scripts/dev-extension.js" "$EXT_DIR/extension.js"
+}
+
 cmd_link() {
     compile_schemas
     remove_installed
-    mkdir -p "$EXT_ROOT"
-    ln -s "$SRC_DIR" "$EXT_DIR"
-    ok "Linked $EXT_DIR → $SRC_DIR"
+    link_tree
+    ok "Linked $EXT_DIR → $SRC_DIR (entry point: scripts/dev-extension.js)"
     warn "Dev mode: edits in src/ are live. Run './scripts/dev.sh reload' to apply them."
     enable_extension
 }
@@ -134,6 +148,58 @@ cmd_status() {
     gnome-extensions info "$UUID" 2>/dev/null || echo "$UUID is not installed."
 }
 
+# The zip for extensions.gnome.org. gnome-extensions picks up extension.js,
+# prefs.js, metadata.json and schemas/*.gschema.xml by itself; lib/ has to be
+# named. The schema ships as XML only: GNOME 44 and later compile it on install.
+cmd_pack() {
+    require gnome-extensions
+    require unzip
+    local zip="$DIST_DIR/$UUID.shell-extension.zip"
+    local extra=(--extra-source=lib) name
+
+    # A licence at the top of the repo goes in the zip too.
+    for name in LICENSE COPYING; do
+        if [[ -f "$REPO_DIR/$name" ]]; then extra+=(--extra-source="$REPO_DIR/$name"); fi
+    done
+
+    mkdir -p "$DIST_DIR"
+    info "Packing $UUID..."
+    gnome-extensions pack "$SRC_DIR" "${extra[@]}" --out-dir="$DIST_DIR" --force
+
+    # gnome-extensions 45 and older still compile the schema into the bundle.
+    if unzip -Z1 "$zip" | grep -qx 'schemas/gschemas.compiled'; then
+        require zip
+        zip -qd "$zip" schemas/gschemas.compiled
+        info "Removed schemas/gschemas.compiled (this gnome-extensions is older than 46)."
+    fi
+
+    check_pack "$zip"
+    unzip -l "$zip"
+    ok "Packed $zip"
+}
+
+# Everything that should ship is in the zip, and nothing else is: every .js
+# under src/lib, the entry points, metadata and the schema XML. A stray file in
+# lib/ (an editor backup, a note) fails here rather than going to review.
+check_pack() {
+    local zip="$1" expected actual missing extra name
+    expected="$(
+        cd "$SRC_DIR"
+        printf '%s\n' extension.js prefs.js metadata.json schemas/*.gschema.xml
+        find lib -type f -name '*.js' | sort
+        for name in LICENSE COPYING; do
+            if [[ -f "$REPO_DIR/$name" ]]; then echo "$name"; fi
+        done
+    )"
+    actual="$(unzip -Z1 "$zip" | grep -v '/$')"
+
+    missing="$(comm -23 <(sort <<<"$expected") <(sort <<<"$actual"))"
+    extra="$(comm -13 <(sort <<<"$expected") <(sort <<<"$actual"))"
+    [[ -z "$missing" ]] || die "Missing from the zip:"$'\n'"$missing"
+    [[ -z "$extra" ]] || die "Should not be in the zip:"$'\n'"$extra"
+    ok "Zip holds exactly the $(wc -l <<<"$expected") files that should ship."
+}
+
 cmd_help() {
     cat <<EOF
 Usage: ./scripts/dev.sh <command>
@@ -146,6 +212,7 @@ Commands:
   logs [since] Show or follow GNOME Shell logs for WallpaperEngine
   uninstall    Disable and remove the extension
   status       Show current installation and activation status
+  pack         Build dist/$UUID.shell-extension.zip for extensions.gnome.org
   help         Show this help
 EOF
 }
@@ -161,6 +228,7 @@ case "$COMMAND" in
     logs)      cmd_logs "${1:-}" ;;
     uninstall) cmd_uninstall ;;
     status)    cmd_status ;;
+    pack)      cmd_pack ;;
     help|-h|--help) cmd_help ;;
     *) die "Unknown command '$COMMAND'. Run './scripts/dev.sh help' for usage." ;;
 esac

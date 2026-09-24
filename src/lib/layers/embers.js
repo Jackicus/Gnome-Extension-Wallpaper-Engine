@@ -8,7 +8,12 @@
 // kept between frames, and a pixel looks at three columns' worth of sparks.
 
 const COLUMN = 52;          // in U: ~37 columns across a 1920-wide screen
-const SLOTS = 3;            // sparks per column at any moment
+const SLOTS = 3;            // sparks per column at any moment, as designed
+const MOST = 6;             // and at the most Amount allows
+
+// A spark or two per column up to six; the last one fades in with the setting
+// rather than appearing all at once.
+export const density = [1 / SLOTS, MOST / SLOTS];
 
 export const glsl = `
 vec4 emberSpark(vec2 p, float column, float slot) {
@@ -24,7 +29,7 @@ vec4 emberSpark(vec2 p, float column, float slot) {
 
     // Slowing as it cools; born just below the bottom edge. Where it is, and
     // whether it is anywhere near, is settled before anything else is worked out.
-    float y = (1.02 + h.w * 0.06 - rise * period * (1.3 * f - 0.3 * f * f)) * u_res.y;
+    float y = (1.02 + h.w * 0.06 - rise * period * (1.3 * f - 0.3 * f * f)) * u_canvas.y;
     float x = ((column + 0.5) * ${COLUMN}.0 + (h.x - 0.5) * ${COLUMN / 2}.0) * U;
     if (abs(p.y - y) > 1.2 * r || abs(p.x - x) > 1.2 * r + 14.0 * U) return vec4(0.0);
 
@@ -41,13 +46,18 @@ vec4 emberSpark(vec2 p, float column, float slot) {
 vec4 embers(vec2 p) {
     // The fire below the frame.
     float heat = 0.5 + 0.15 * sin(wphase(0.7)) + 0.08 * sin(wphase(2.3));
-    float band = (p.y - u_res.y * 0.72) / (u_res.y * 0.28);
+    float band = (p.y - u_canvas.y * 0.72) / (u_canvas.y * 0.28);
     vec4 c = vec4(1.0, 0.471, 0.157, 1.0) * 0.28 * clamp(band, 0.0, 1.0) * heat;
 
     float column = floor(p.x / (${COLUMN}.0 * U));
-    for (int dc = -1; dc <= 1; dc++)
-        for (int s = 0; s < ${SLOTS}; s++)
-            c += emberSpark(p, column + float(dc), float(s));
+    // Slot by slot, each behind a test on the Amount setting alone, so every
+    // pixel takes the same way and the code stays straight-line.
+    for (int dc = -1; dc <= 1; dc++) {
+        float col = column + float(dc);
+        ${Array.from({ length: MOST }, (_, s) => s < SLOTS
+            ? `c += emberSpark(p, col, ${s}.0)${s === SLOTS - 1 ? ` * clamp(${SLOTS}.0 * u_density - ${s}.0, 0.0, 1.0)` : ''};`
+            : `if (${SLOTS}.0 * u_density > ${s}.0) c += emberSpark(p, col, ${s}.0) * clamp(${SLOTS}.0 * u_density - ${s}.0, 0.0, 1.0);`).join('\n        ')}
+    }
     return c;
 }
 `;

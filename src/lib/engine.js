@@ -20,31 +20,47 @@ const SAME_FRAME_US = 1000;
 // gaps between tiled windows included.
 const COVERED = 0.95;
 
+// How long a pattern takes to fade in when it is switched on, or out when off.
+const FADE_MS = 600;
+
 /**
- * The animation's own time: seconds of motion so far, scaled by the speed
- * setting, and shared by every monitor so they stay in step.
+ * The animation's own time, one clock per pattern: seconds of motion so far,
+ * scaled by the speed setting and by that pattern's own speed. Shared by every
+ * monitor, so a pattern stays in step across all of them -- which is what lets
+ * one picture span them.
  */
 export class SceneClock {
     constructor() {
         this.speed = 1;
-        this._t = 0;
+        this.rates = new Map(); // pattern id -> its own speed
+        this._times = new Map(EFFECTS.map(e => [e.id, 0]));
         this._lastUs = 0;
     }
 
-    /** Advances to now and returns the scene time. Called from paint. */
-    now() {
+    /** Advances every pattern's time to now, once a frame. Called from paint. */
+    tick() {
         const us = GLib.get_monotonic_time();
         const dt = (us - this._lastUs) / 1e6;
-        if (this._lastUs && dt < SAME_FRAME_US / 1e6) return this._t;
-        if (this._lastUs && dt <= MAX_STEP_S) this._t += dt * this.speed;
+        if (this._lastUs && dt < SAME_FRAME_US / 1e6) return;
+        if (this._lastUs && dt <= MAX_STEP_S) {
+            for (const [id, t] of this._times)
+                this._times.set(id, t + dt * this.speed * (this.rates.get(id) ?? 1));
+        }
         this._lastUs = us;
-        return this._t;
+    }
+
+    time(id) {
+        return this._times.get(id) ?? 0;
     }
 }
 
 /**
  * One monitor's patterns: an actor the size of the monitor, holding one child
  * per enabled pattern, each painted entirely by that pattern's shader.
+ *
+ * `view` is what the patterns draw: `canvas`, the rectangle of the picture in
+ * stage coordinates (this monitor, or the box around every monitor when they
+ * are spanned), `unit`, the size of U in pixels, and `seed`.
  *
  * Pacing hangs off the paint itself. Every paint books the next one for
  * `divisor` refreshes later -- half a refresh early, so it lands on that frame
@@ -55,11 +71,12 @@ export class SceneClock {
  * accord: a window moving off it, the overview opening, a setting changing.
  */
 export class MonitorRenderer {
-    constructor(monitor, clock, state) {
+    constructor(monitor, view, clock, state) {
         this.monitor = monitor;
+        this._view = view;
         this._clock = clock;
         this._timerId = 0;
-        this._layers = new Map(); // pattern id -> { actor, effect, state, t }
+        this._layers = new Map(); // pattern id -> { id, actor, effect, state, density, t }
 
         this.actor = new Clutter.Actor({
             name: `WallpaperEngine-Monitor-${monitor.index}`,
@@ -68,6 +85,9 @@ export class MonitorRenderer {
             width: monitor.width,
             height: monitor.height,
             reactive: false,
+            // A shader effect paints a pixel's margin past its actor, which two
+            // monitors side by side would both paint -- a bright seam.
+            clip_to_allocation: true,
         });
 
         this.setState(state);
@@ -79,13 +99,35 @@ export class MonitorRenderer {
         const wanted = EFFECTS.filter(e => state.enabledEffects.includes(e.id));
         for (const [id, layer] of this._layers) {
             if (wanted.some(e => e.id === id)) continue;
-            layer.actor.destroy();
             this._layers.delete(id);
+            layer.actor.ease({
+                opacity: 0,
+                duration: FADE_MS,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                // Not when the transition was cut short by the actor going
+                // with the rest of the monitor: it is gone already.
+                onStopped: finished => finished && layer.actor.destroy(),
+            });
         }
+
         // Drawn in catalog order, whatever order they were switched on in.
         wanted.forEach((effect, index) => {
-            if (!this._layers.has(effect.id)) this._layers.set(effect.id, this._createLayer(effect));
-            this.actor.set_child_at_index(this._layers.get(effect.id).actor, index);
+            let layer = this._layers.get(effect.id);
+            if (!layer) {
+                layer = this._createLayer(effect);
+                this._layers.set(effect.id, layer);
+            }
+            this.actor.set_child_at_index(layer.actor, index);
+
+            const tuning = state.tuning[effect.id] ?? {};
+            const [low, high] = effect.density ?? [1, 1];
+            layer.density = Math.max(low, Math.min(high, tuning.density ?? 1));
+            layer.effect.setUniform('u_gain', 1, [tuning.brightness ?? 1]);
+            layer.effect.setUniform('u_density', 1, [layer.density]);
+            // Drawn afresh even while the patterns rest, so a setting changed
+            // then still shows.
+            layer.t = -1;
+            layer.effect.queue_repaint();
         });
 
         this.actor.opacity = Math.round(Math.max(0.1, Math.min(1, state.opacity)) * 255);
@@ -93,20 +135,38 @@ export class MonitorRenderer {
     }
 
     _createLayer(effect) {
-        const { width, height, index } = this.monitor;
+        const { canvas, unit, seed } = this._view;
+        const { width, height } = this.monitor;
+        const origin = [this.monitor.x - canvas.x, this.monitor.y - canvas.y];
         const Effect = effectClass(effect);
         const layer = {
-            actor: new Clutter.Actor({ width, height, reactive: false }),
+            id: effect.id,
+            actor: new Clutter.Actor({ width, height, reactive: false, opacity: 0 }),
             effect: new Effect(),
-            state: effect.State ? new effect.State(width, height, index) : null,
+            state: effect.State
+                ? new effect.State({
+                    width: canvas.width,
+                    height: canvas.height,
+                    unit,
+                    seed,
+                    rect: { x: origin[0], y: origin[1], width, height },
+                })
+                : null,
+            density: 1,
             t: -1,
         };
-        layer.effect.setUniform('u_res', 2, [width, height]);
-        // Two monitors side by side should not show the same sparkles.
-        layer.effect.setUniform('u_seed', 1, [index * 17.31]);
-        layer.effect.onPaint = () => this._onPaint(layer);
-        layer.actor.add_effect(layer.effect);
+
+        const fx = layer.effect;
+        fx.setUniform('u_res', 2, [width, height]);
+        fx.setUniform('u_origin', 2, origin);
+        fx.setUniform('u_canvas', 2, [canvas.width, canvas.height]);
+        fx.setUniform('u_unit', 1, [unit]);
+        fx.setUniform('u_seed', 1, [seed]);
+        fx.onPaint = () => this._onPaint(layer);
+        layer.actor.add_effect(fx);
         this.actor.add_child(layer.actor);
+
+        layer.actor.ease({ opacity: 255, duration: FADE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
         return layer;
     }
 
@@ -122,18 +182,22 @@ export class MonitorRenderer {
     _paused(throughClone = false) {
         const state = this._state;
         if (this._layers.size === 0) return true;
+        // Animations switched off and power saver are the user's choices too,
+        // made for the whole system.
+        if (!state.animations || state.powerSaver) return true;
         if (state.pauseOnBattery && state.onBattery) return true;
         return state.pauseWhenCovered && !throughClone && desktopCovered(this.monitor.index);
     }
 
     _onPaint(layer) {
-        const t = this._clock.now();
+        this._clock.tick();
+        const t = this._clock.time(layer.id);
         if (t !== layer.t) {
             layer.t = t;
             const epoch = Math.floor(t / EPOCH_S) * EPOCH_S;
             layer.effect.setUniform('u_epoch', 1, [epoch]);
             layer.effect.setUniform('u_time', 1, [t - epoch]);
-            for (const [name, components, values] of layer.state?.uniforms(t) ?? [])
+            for (const [name, components, values] of layer.state?.uniforms(t, layer.density) ?? [])
                 layer.effect.setUniform(name, components, values);
         }
 
@@ -167,7 +231,6 @@ export class MonitorRenderer {
     destroy() {
         if (this._timerId) GLib.source_remove(this._timerId);
         this._timerId = 0;
-        for (const layer of this._layers.values()) layer.effect.onPaint = null;
         this._layers.clear();
         this.actor.destroy();
     }

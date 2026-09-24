@@ -20,21 +20,24 @@ export const glsl = `
 vec4 auroraCurtain(vec2 p, vec3 rgb, float hang, float wander, float minLen, float maxLen,
                    float alpha, float pace, float seed) {
     // Rows no curtain of this height and sway can reach cost nothing.
-    float row = p.y / u_res.y;
+    float row = p.y / u_canvas.y;
     if (row > hang + wander + 0.01 || row < hang - wander - maxLen) return vec4(0.0);
 
     vec2 o = vec2(seed * 7.31 + u_seed, seed * 3.17);
-    float u = p.x / u_res.x;
+    float u = p.x / DESIGN_W;
 
     float sag = fbm(vec2(u * 1.6 + drift(pace), 3.3 + drift(0.02)) + o) - 0.5;
-    float bottom = (hang + sag * 2.0 * wander) * u_res.y;
+    float bottom = (hang + sag * 2.0 * wander) * u_canvas.y;
     if (p.y > bottom + 5.0 * U) return vec4(0.0);
 
     float len = fbm(vec2(u * 2.4 - drift(pace * 1.3), 9.0 + drift(0.05)) + o);
-    float height = (minLen + (maxLen - minLen) * len) * u_res.y;
+    float height = (minLen + (maxLen - minLen) * len) * u_canvas.y;
     float g = (p.y - (bottom - height)) / height;
     if (g < 0.0) return vec4(0.0);
-    float rays = vnoise(vec2(u * 38.0 + drift(0.12), 20.0 + drift(0.35)) + o);
+    // Two scales of ray, so the curtain breaks into streaks of every width
+    // rather than bands of one.
+    float rays = vnoise(vec2(u * 38.0 + drift(0.12), 20.0 + drift(0.35)) + o) * 0.6 +
+                 vnoise(vec2(u * 103.0 - drift(0.2), 50.0 + drift(0.6)) + o) * 0.4;
 
     // Faint at the top, brightest just above the hem, and a soft hem under it.
     float a = g < 0.5 ? mix(0.0, 0.22, g / 0.5)

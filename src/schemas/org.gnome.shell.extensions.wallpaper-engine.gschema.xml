@@ -6,10 +6,25 @@
       <summary>Enabled animated patterns</summary>
       <description>List of animated pattern IDs active on the desktop wallpaper.</description>
     </key>
+    <key name="pattern-tuning" type="a{sa{sd}}">
+      <default>{}</default>
+      <summary>Per-pattern tuning</summary>
+      <description>For each pattern id, any of "brightness", "speed" and "density" (the Amount setting), as multipliers of the pattern's design. Missing entries are 1.</description>
+    </key>
+    <key name="span-monitors" type="b">
+      <default>false</default>
+      <summary>Span all monitors</summary>
+      <description>Draw the patterns, and a gradient base, as one picture across every monitor instead of one per monitor.</description>
+    </key>
+    <key name="saved-scenes" type="aa{sv}">
+      <default>[]</default>
+      <summary>Saved scenes</summary>
+      <description>Scenes saved from the preferences: each a "name" and the values of the keys a scene covers.</description>
+    </key>
     <key name="background-mode" type="s">
       <default>'desktop'</default>
       <summary>Background base mode</summary>
-      <description>Base layer underneath patterns: 'desktop' (system wallpaper overlay), 'color' (palette gradient), or 'image' (custom picture).</description>
+      <description>Base layer underneath patterns: 'desktop' (the system wallpaper), 'accent' (a gradient in GNOME's accent colour), 'color' (a palette gradient), or 'image' (a custom picture).</description>
     </key>
     <key name="color-palette" type="s">
       <default>'Classic Blue'</default>

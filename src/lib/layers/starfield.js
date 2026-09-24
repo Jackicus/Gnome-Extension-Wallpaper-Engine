@@ -6,7 +6,9 @@ import { seeded } from '../layer.js';
 // The stars are grids of cells like the sparkles, one star to a cell at most.
 // The band is a scatter of single dots, one hash per pixel of a 1080-line
 // screen against a density that peaks along the band's diagonal. Meteors are
-// rare enough to be decided here and handed over as one streak.
+// rare enough to be decided here and handed over as one streak: one to each
+// eight-second slot, placed by a hash of the slot, so every monitor of a
+// spanned sky agrees on it without having to share anything.
 
 // z range, share of the ~260 stars a 1080-line screen holds.
 const BANDS = [
@@ -18,20 +20,26 @@ const BANDS = [
 const COUNT = 260;
 const OCCUPIED = 0.8;
 const REPEAT = 64;
+const METEOR_EVERY = 8;     // seconds
+
+// More stars are smaller cells: a quarter as many, up to twice.
+export const density = [0.25, 2];
 
 function band([z0, z1, share], i) {
     const z = (z0 + z1) / 2;
     const cell = Math.sqrt(1920 * 1080 * OCCUPIED / (COUNT * share));
-    const drift = -0.0012 * (0.3 + z);
-    return `c += starBand(p, ${i}.0, ${z0.toFixed(2)}, ${z1.toFixed(2)}, ${cell.toFixed(1)}, ${drift.toFixed(5)});`;
+    // West, in 1080-line pixels a second.
+    const drift = -0.0012 * (0.3 + z) * 1920;
+    return `c += starBand(p, ${i}.0, ${z0.toFixed(2)}, ${z1.toFixed(2)}, ${cell.toFixed(1)}, ${drift.toFixed(3)});`;
 }
 
 export const glsl = `
-uniform vec4 starfield_meteor;          // head x, y and tail x, y, in pixels
+uniform vec4 starfield_meteor;          // head x, y and tail x, y, in canvas pixels
 uniform vec2 starfield_meteor_fade;     // brightness, and whether there is one
 
-vec4 starBand(vec2 p, float band, float z0, float z1, float cell, float drift) {
-    vec2 q = p / U - scroll(vec2(drift * u_res.x / U, 0.0), cell * ${REPEAT}.0);
+vec4 starBand(vec2 p, float band, float z0, float z1, float designCell, float drift) {
+    float cell = designCell / sqrt(u_density);
+    vec2 q = p / U - scroll(vec2(drift, 0.0), cell * ${REPEAT}.0);
     vec2 id = mod(floor(q / cell), ${REPEAT}.0);
     vec2 key = id + vec2(band * 53.1 + u_seed, band * 11.3 + 7.0);
     vec4 h = hash42(key);
@@ -53,8 +61,8 @@ vec4 starBand(vec2 p, float band, float z0, float z1, float cell, float drift) {
 // left to the lower right.
 vec4 galacticBand(vec2 p) {
     vec2 cell = floor(p / U);
-    float along = p.x / u_res.x;
-    float spread = p.y / u_res.y - (0.15 + along * 0.55);
+    float along = p.x / u_canvas.x;
+    float spread = p.y / u_canvas.y - (0.15 + along * 0.55);
     float density = 0.00556 * exp(-spread * spread / 0.0162);
     vec4 h = hash42(cell + vec2(u_seed * 3.1, 17.0));
     if (h.x >= density) return vec4(0.0);
@@ -83,47 +91,26 @@ vec4 starfield(vec2 p) {
 `;
 
 export class State {
-    constructor(w, h, index) {
-        this._w = w;
-        this._h = h;
-        this._rand = seeded(11 + index * 101);
-        this._meteor = null;
-        this._next = 3;
+    constructor({ width, height, unit, seed }) {
+        this._width = width;
+        this._height = height;
+        this._unit = unit;
+        this._seed = Math.round(seed * 100);
         this._streak = [0, 0, 0, 0];
     }
 
     uniforms(t) {
-        // The clock only runs forwards, but it is a new clock after a reload.
-        if (this._meteor && t < this._meteor.start) this._meteor = null;
-        if (!this._meteor && t > this._next) {
-            const rand = this._rand;
-            this._meteor = {
-                start: t,
-                x: 0.1 + rand() * 0.7,
-                y: rand() * 0.35,
-                vx: 0.55 + rand() * 0.3,
-                vy: 0.28 + rand() * 0.2,
-                life: 0.7 + rand() * 0.5,
-            };
-        }
+        const m = this._meteor(t);
+        if (!m) return [['starfield_meteor_fade', 2, [0, 0]]];
 
-        const m = this._meteor;
-        const age = m ? t - m.start : 0;
-        if (!m || age >= m.life) {
-            if (m) {
-                this._meteor = null;
-                this._next = t + 5 + this._rand() * 6;
-            }
-            return [['starfield_meteor_fade', 2, [0, 0]]];
-        }
-
-        const fade = Math.sin((age / m.life) * Math.PI);
-        const x = (m.x + m.vx * age) * this._w;
-        const y = (m.y + m.vy * age) * this._h;
+        const across = 1920 * this._unit;
+        const fade = Math.sin((m.age / m.life) * Math.PI);
+        const x = m.x * this._width + m.vx * m.age * across;
+        const y = (m.y + m.vy * m.age) * this._height;
         // Along the way it is actually travelling, in pixels.
-        const dx = m.vx * this._w;
-        const dy = m.vy * this._h;
-        const len = (90 + 60 * fade) * (this._h / 1080) / Math.hypot(dx, dy);
+        const dx = m.vx * across;
+        const dy = m.vy * this._height;
+        const len = (90 + 60 * fade) * this._unit / Math.hypot(dx, dy);
         this._streak[0] = x;
         this._streak[1] = y;
         this._streak[2] = x - dx * len;
@@ -132,5 +119,24 @@ export class State {
             ['starfield_meteor', 4, this._streak],
             ['starfield_meteor_fade', 2, [fade, 1]],
         ];
+    }
+
+    // The meteor of the slot t falls in, if it is in the sky at t.
+    _meteor(t) {
+        if (t < 3) return null;
+        const slot = Math.floor((t - 3) / METEOR_EVERY);
+        const rand = seeded(slot * 7919 + this._seed + 11);
+        const life = 0.7 + rand() * 0.5;
+        const start = 3 + slot * METEOR_EVERY + rand() * (METEOR_EVERY - life);
+        const age = t - start;
+        if (age < 0 || age >= life) return null;
+        return {
+            age,
+            life,
+            x: 0.1 + rand() * 0.7,
+            y: rand() * 0.35,
+            vx: 0.55 + rand() * 0.3,
+            vy: 0.28 + rand() * 0.2,
+        };
     }
 }

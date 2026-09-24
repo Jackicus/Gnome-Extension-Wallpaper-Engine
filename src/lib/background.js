@@ -23,7 +23,7 @@ import Clutter from 'gi://Clutter';
 import cairo from 'cairo';
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 
-import { PALETTES, paintPalette, paletteStops } from './palettes.js';
+import { accentStops, paintGradient, paletteStops } from './palettes.js';
 
 const BACKGROUND_SCHEMA = 'org.gnome.desktop.background';
 
@@ -41,6 +41,7 @@ export class ShellBackground {
         // layout manager for it. Its actor is parented into an actor nobody
         // shows, so it is never painted.
         this._holder = null;
+        this._holderContainer = null;
         this._source = null;
         this._shellSettings = null;
         this._applied = null;
@@ -104,6 +105,8 @@ export class ShellBackground {
         if (this._holder) {
             this._holder.destroy();
             this._holder = null;
+            this._holderContainer.destroy();
+            this._holderContainer = null;
         }
     }
 
@@ -113,20 +116,28 @@ export class ShellBackground {
     }
 
     /**
-     * What the shell should show under the patterns: a generated gradient, the
-     * user's own picture, or nothing at all in `desktop` mode, where the point
-     * is that their wallpaper shows through.
+     * What the shell should show under the patterns: a generated gradient (a
+     * palette, or the accent colour), the user's own picture, or nothing at
+     * all in `desktop` mode, where the point is that their wallpaper shows
+     * through.
      */
     _describe(state) {
-        if (state.mode === 'color') {
-            const file = this._paletteFile(state.colorPalette);
+        const stops = state.mode === 'color' ? paletteStops(state.colorPalette)
+            : state.mode === 'accent' ? accentStops(state.accent) : null;
+        if (stops) {
+            // With the patterns spanning every monitor, so does the gradient
+            // under them: one image across the lot.
+            const [width, height] = state.span ? spannedSize() : largestSize();
+            const file = this._gradientFile(stops, width, height);
             if (!file) return null;
+            const [, r, g, b] = stops[Math.floor(stops.length / 2)];
             return {
                 uri: file,
                 // The image is generated at the size it will be shown at, so
                 // stretching it is exact rather than a compromise.
-                style: GDesktopEnums.BackgroundStyle.STRETCHED,
-                color: paletteColor(state.colorPalette),
+                style: state.span ? GDesktopEnums.BackgroundStyle.SPANNED : GDesktopEnums.BackgroundStyle.STRETCHED,
+                // A solid stand-in, for the moment before the image loads.
+                color: `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`,
             };
         }
 
@@ -146,21 +157,18 @@ export class ShellBackground {
     }
 
     /**
-     * The palette, rendered once to a PNG under the user's cache directory.
+     * A gradient, rendered once to a PNG under the user's cache directory.
      *
      * The name carries a digest of the stops and the size, so an edited palette
      * is a different file rather than the same path with new bytes -- which the
      * shell's image cache would have to be told about. There is no pruning: the
      * shell watches the file it shows and reloads the wallpaper on any change to
-     * it, even a touch, and eight palettes at a monitor size or two are a few
+     * it, even a touch, and a few gradients at a monitor size or two are a few
      * hundred kilobytes.
      */
-    _paletteFile(name) {
-        const key = PALETTES[name] ? name : 'Classic Blue';
-        const [width, height] = baseSize();
+    _gradientFile(stops, width, height) {
         const digest = GLib.compute_checksum_for_string(
-            GLib.ChecksumType.SHA256,
-            JSON.stringify([PALETTES[key], width, height]), -1).slice(0, 12);
+            GLib.ChecksumType.SHA256, JSON.stringify([stops, width, height]), -1).slice(0, 12);
         const path = GLib.build_filenamev([this._cacheDir, `palette-${digest}.png`]);
 
         if (!GLib.file_test(path, GLib.FileTest.EXISTS)) {
@@ -168,12 +176,12 @@ export class ShellBackground {
                 GLib.mkdir_with_parents(this._cacheDir, 0o755);
                 const surface = new cairo.ImageSurface(cairo.Format.RGB24, width, height);
                 const cr = new cairo.Context(surface);
-                paintPalette(cr, key, width, height);
+                paintGradient(cr, stops, width, height);
                 cr.$dispose();
                 surface.writeToPNG(path);
                 surface.finish();
             } catch (e) {
-                console.error(`[WallpaperEngine] Could not render palette ${key}: ${e}`);
+                console.error(`[WallpaperEngine] Could not render a gradient: ${e}`);
                 return null;
             }
         }
@@ -204,14 +212,17 @@ export class ShellBackground {
 
     _obtainSource() {
         if (!this._holder) {
+            this._holderContainer = new Clutter.Actor();
             try {
                 this._holder = new Background.BackgroundManager({
-                    container: new Clutter.Actor(),
+                    container: this._holderContainer,
                     monitorIndex: 0,
                     controlPosition: false,
                 });
             } catch (e) {
                 console.error(`[WallpaperEngine] Could not reach the shell's backgrounds: ${e}`);
+                this._holderContainer.destroy();
+                this._holderContainer = null;
                 return null;
             }
         }
@@ -232,17 +243,9 @@ function reloadBackgrounds(source) {
         backgrounds[key]?._emitChangedSignal?.();
 }
 
-// A solid stand-in for the gradient, shown for the moment before the image is
-// loaded and if it cannot be.
-function paletteColor(name) {
-    const stops = paletteStops(name);
-    const [, r, g, b] = stops[Math.floor(stops.length / 2)];
-    return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
-}
-
 // One image serves every monitor, so it is rendered for the largest of them.
-function baseSize() {
-    const monitors = global.display?.get_n_monitors?.() ?? 0;
+function largestSize() {
+    const monitors = global.display.get_n_monitors();
     let width = 0;
     let height = 0;
 
@@ -254,4 +257,18 @@ function baseSize() {
 
     if (width < 1 || height < 1) return FALLBACK_SIZE;
     return [width, height];
+}
+
+// Spanned, one image covers the box around every monitor.
+function spannedSize() {
+    const monitors = global.display.get_n_monitors();
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < monitors; i++) {
+        const rect = global.display.get_monitor_geometry(i);
+        x0 = Math.min(x0, rect.x);
+        y0 = Math.min(y0, rect.y);
+        x1 = Math.max(x1, rect.x + rect.width);
+        y1 = Math.max(y1, rect.y + rect.height);
+    }
+    return x1 > x0 && y1 > y0 ? [x1 - x0, y1 - y0] : FALLBACK_SIZE;
 }

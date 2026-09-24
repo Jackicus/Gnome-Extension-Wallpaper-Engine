@@ -22,23 +22,35 @@ const FRAGMENT = Shell.SnippetHook?.FRAGMENT ?? Cogl.SnippetHook.FRAGMENT;
 // How much scene time u_time carries before it rolls over into u_epoch.
 export const EPOCH_S = 1024;
 
-// Shared by every pattern. Coordinates are monitor pixels, y down; `U` is one
-// pixel of a 1080-line screen, so a pattern sized in U looks the same on any
-// monitor, only sharper on a denser one.
+// Shared by every pattern (docs/patterns.md has the whole contract).
+//
+// A pattern draws a canvas: the monitor it is on, or -- with span-monitors --
+// the box around every monitor, so that one picture runs across all of them.
+// Its coordinates are canvas pixels, y down, and u_canvas is the canvas's
+// size. `U` is one pixel of a 1080-line screen, so a pattern sized in U looks
+// the same on any monitor, only sharper on a denser one; DESIGN_W is the width
+// of a 1920x1080 screen in the same units, what "across the screen" means for
+// anything with a horizontal frequency, so a wider canvas gets more of it
+// rather than a stretched copy. u_density is the pattern's amount setting, 1
+// being the design; u_seed differs per monitor unless they are spanned.
 //
 // Time arrives in two parts because a 32-bit float cannot hold an hour of it
 // to the fraction of a millisecond a frame needs: past that, motion steps
 // unevenly from one frame to the next. u_time is the seconds since the last
 // whole epoch and stays small; the helpers below fold the epoch in with the
 // large part reduced first, so its rounding is a constant that shifts once an
-// epoch, not a jitter every frame.
+// epoch, not a jitter every frame. Both are this pattern's own time, already
+// scaled by its speed.
 const COMMON = `
-uniform vec2 u_res;
+uniform vec2 u_canvas;
+uniform float u_unit;
 uniform float u_time;
 uniform float u_epoch;
 uniform float u_seed;
+uniform float u_density;
 
-#define U (u_res.y / 1080.0)
+#define U u_unit
+#define DESIGN_W (1920.0 * u_unit)
 #define TAU 6.28318530718
 
 // The argument for sin(w * t).
@@ -126,8 +138,10 @@ float segmentDistance(vec2 p, vec2 a, vec2 b) {
 }
 `;
 
-// GType names last as long as the process, and this module is loaded afresh on
-// every enable, so each load names its classes apart.
+// Kept for the life of the module, across disable and enable: a class compiles
+// its pipeline once, and re-registering it would only leak another. GType names
+// last as long as the process, and under a development link this module is
+// loaded afresh on every enable, so each load names its classes apart.
 const LOAD = GLib.uuid_string_random().slice(0, 8);
 const classes = new Map();
 
@@ -148,10 +162,13 @@ export function effectClass(effect) {
  */
 export function shaderSource(effect) {
     return {
-        declarations: `${COMMON}\n${effect.glsl}`,
+        // The effect's own inputs, which the pattern never needs to see: the
+        // size of the monitor this actor covers, where that sits in the
+        // canvas, and the pattern's brightness setting.
+        declarations: `uniform vec2 u_res;\nuniform vec2 u_origin;\nuniform float u_gain;\n${COMMON}\n${effect.glsl}`,
         code: `
-            vec2 p = cogl_tex_coord_in[0].st * u_res;
-            cogl_color_out = clamp(${effect.id}(p), 0.0, 1.0) * cogl_color_in.a;
+            vec2 p = u_origin + cogl_tex_coord_in[0].st * u_res;
+            cogl_color_out = clamp(${effect.id}(p) * u_gain, 0.0, 1.0) * cogl_color_in.a;
         `,
     };
 }

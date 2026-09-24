@@ -201,11 +201,17 @@ export class OverviewCanvas {
         });
     }
 
-    // The workspace previews, across every monitor's view.
+    // The workspace previews, across every monitor's view. The primary
+    // monitor's view holds its workspaces itself; another monitor's is a
+    // display wrapping a view of its own -- all the workspaces, or only the one
+    // it shows when workspaces are on the primary monitor alone.
     _workspacePreviews() {
         const views = Main.overview._overview?.controls?._workspacesDisplay?._workspacesViews ?? [];
         const out = [];
-        for (const view of views) out.push(...(view._workspaces ?? []));
+        for (const view of views) {
+            const inner = view._workspacesView ?? view;
+            out.push(...(inner._workspaces ?? (inner._workspace ? [inner._workspace] : [])));
+        }
         return out;
     }
 }

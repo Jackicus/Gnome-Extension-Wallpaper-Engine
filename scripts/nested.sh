@@ -7,6 +7,8 @@
 #                                     of it on the real desktop
 #   ./scripts/nested.sh start --headless [WxH]
 #                                     no mirror window; screenshots are the only view
+#   ./scripts/nested.sh start [--headless] [WxH] --monitors N
+#                                     N such monitors side by side (for span-monitors)
 #   ./scripts/nested.sh do "STEP" "STEP"...
 #                                     run several steps in one go (one connection):
 #                                     say TEXT | click X Y | move X Y | key KEYSYM |
@@ -131,13 +133,18 @@ touch_activity() {
 cmd_start() {
     # Mirrored by default: the whole point of driving the extension is that the
     # user can see what is being tried, without logging out to look.
-    local mirror=1
-    case "${1:-}" in
-        --headless|--no-mirror) mirror=0; shift ;;
-        --windowed|--mirror) mirror=1; shift ;;
-    esac
-    local geometry="${1:-1600x900}"
+    local mirror=1 monitors=1 geometry=1600x900
+    while (( $# )); do
+        case "$1" in
+            --headless|--no-mirror) mirror=0 ;;
+            --windowed|--mirror) mirror=1 ;;
+            --monitors) monitors="${2:-}"; shift ;;
+            *) geometry="$1" ;;
+        esac
+        shift
+    done
     [[ "$geometry" =~ ^[0-9]+x[0-9]+$ ]] || die "Geometry must look like 1600x900, got '$geometry'."
+    [[ "$monitors" =~ ^[1-9]$ ]] || die "--monitors takes a count from 1 to 9, got '$monitors'."
 
     if is_running; then
         info "Reusing the nested shell already running (pid $(cat "$PID_FILE"), $(geometry))."
@@ -163,16 +170,19 @@ cmd_start() {
     rm -rf "$RUN_DIR"
     mkdir -p "$RUN_DIR"
     : > "$LOG_FILE"
-    echo "$geometry" > "$GEOM_FILE"
+    # The monitors sit side by side, so what the driver and the mirror see --
+    # the pointer's range, the screenshot, the recorded area -- is all of them.
+    echo "$(( ${geometry%x*} * monitors ))x${geometry#*x}" > "$GEOM_FILE"
     # If the real shell's own guard is already there (it logged in under a minute
     # ago), it is not ours to remove.
     [[ -e "$CRASH_GUARD" ]] || touch "$GUARD_OWNED_FILE"
     # Only a shell a Claude Code session started is that session's to clean up.
     [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]] && echo "$CLAUDE_CODE_SESSION_ID" > "$OWNER_FILE"
 
-    local mode_args=(--wayland --wayland-display "$WL_DISPLAY" --headless --virtual-monitor "$geometry")
+    local mode_args=(--wayland --wayland-display "$WL_DISPLAY" --headless)
+    for (( i = 0; i < monitors; i++ )); do mode_args+=(--virtual-monitor "$geometry"); done
 
-    info "Starting nested GNOME Shell (headless, $geometry)..."
+    info "Starting nested GNOME Shell (headless, $monitors x $geometry)..."
 
     # dbus-run-session creates the bus; we echo its address out so later commands
     # can address this shell specifically.

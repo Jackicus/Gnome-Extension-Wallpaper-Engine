@@ -54,6 +54,16 @@ The same steps exist as single commands (`./scripts/nested.sh shot …`) for a
 one-off; prefer `do`. Other commands: `status`, `reload`, `logs [N] [--all]`,
 `mirror on|off`, `run CMD…` (against the nested bus), `start --headless [WxH]`.
 
+**Two monitors:** `start 1920x1080 --monitors 2` puts that many side by side
+(screenshots, the mirror and pointer coordinates then span all of them). It is
+the only way to check `span-monitors`, the seam between two monitors, or the
+overview's secondary-monitor previews.
+
+**No shell at all:** for a pattern's look, `node scripts/shaders.mjs render
+PATTERN --out FILE --frames 3 [--span 2] [--density D]` draws frames straight to
+a PNG. It is faster, needs nothing running, and is what to use while someone
+else has the nested shell; come here for motion, the overview and prefs.
+
 ## Changing what is drawn
 
 Everything visible is a GSettings key, so the way to exercise a pattern is to
