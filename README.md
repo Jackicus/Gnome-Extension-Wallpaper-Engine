@@ -23,12 +23,49 @@ on your desktop every one of them moves.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/northern-lights.jpg" alt="Northern Lights scene"><br><b>Northern Lights</b>: aurora curtains over a starry polar sky</td>
-    <td width="50%"><img src="docs/screenshots/classic.jpg" alt="Classic scene"><br><b>Classic</b>: the wave and its sparkles over deep blue</td>
+    <td align="center" width="33%"><img src="docs/screenshots/scenes/classic.jpg" alt="Classic scene"><br><b>Classic</b><br><sub>The wave and its sparkles over deep blue</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/scenes/accent.jpg" alt="Accent scene"><br><b>Accent</b><br><sub>The wave and its sparkles in your accent colour</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/scenes/northern-lights.jpg" alt="Northern Lights scene"><br><b>Northern Lights</b><br><sub>Aurora curtains over a starry polar sky</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/topography.jpg" alt="Topography scene"><br><b>Topography</b>: a living relief map in your accent colour</td>
-    <td width="50%"><img src="docs/screenshots/snowfall.jpg" alt="Snowfall scene"><br><b>Snowfall</b>: a quiet snowfall on a winter night</td>
+    <td align="center"><img src="docs/screenshots/scenes/deep-space.jpg" alt="Deep Space scene"><br><b>Deep Space</b><br><sub>Nebula clouds, stars and drifting constellations</sub></td>
+    <td align="center"><img src="docs/screenshots/scenes/campfire.jpg" alt="Campfire scene"><br><b>Campfire</b><br><sub>Embers rising through soft out-of-focus light</sub></td>
+    <td align="center"><img src="docs/screenshots/scenes/snowfall.jpg" alt="Snowfall scene"><br><b>Snowfall</b><br><sub>A quiet snowfall on a winter night</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/scenes/rainy-evening.jpg" alt="Rainy Evening scene"><br><b>Rainy Evening</b><br><sub>Fine rain in front of blurred distant lights</sub></td>
+    <td align="center"><img src="docs/screenshots/scenes/summer-night.jpg" alt="Summer Night scene"><br><b>Summer Night</b><br><sub>Fireflies under a few faint stars</sub></td>
+    <td align="center"><img src="docs/screenshots/scenes/topography.jpg" alt="Topography scene"><br><b>Topography</b><br><sub>A living relief map in your accent colour</sub></td>
+  </tr>
+</table>
+
+## Patterns
+
+Twelve patterns, and you can turn on any combination of them. Each one is shown
+here by itself, over the palette it's usually paired with. Some are cropped in
+close, and Starfield, Sparkles and Embers have their Amount and Brightness turned
+up so they're visible at this size.
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/patterns/nebula.jpg" alt="Nebula pattern"><br><b>Nebula</b><br><sub>Slow clouds of violet, teal and magenta light</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/patterns/aurora.jpg" alt="Aurora pattern"><br><b>Aurora</b><br><sub>Curtains of polar light, streaked with rays</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/patterns/contours.jpg" alt="Contours pattern"><br><b>Contours</b><br><sub>Topographic lines of a slowly shifting landscape</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/patterns/starfield.jpg" alt="Starfield pattern"><br><b>Starfield</b><br><sub>Layered stars, a galactic band and meteors</sub></td>
+    <td align="center"><img src="docs/screenshots/patterns/wave.jpg" alt="Wave pattern"><br><b>Wave</b><br><sub>Folded sheets of light with bright crests</sub></td>
+    <td align="center"><img src="docs/screenshots/patterns/constellation.jpg" alt="Constellation pattern"><br><b>Constellation</b><br><sub>Drifting points that link up when they meet</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/patterns/sparkles.jpg" alt="Sparkles pattern"><br><b>Sparkles</b><br><sub>Drifting, depth-scaled specks with a soft flare</sub></td>
+    <td align="center"><img src="docs/screenshots/patterns/embers.jpg" alt="Embers pattern"><br><b>Embers</b><br><sub>Sparks rising and cooling from white to red</sub></td>
+    <td align="center"><img src="docs/screenshots/patterns/fireflies.jpg" alt="Fireflies pattern"><br><b>Fireflies</b><br><sub>Warm lights wandering and blinking slowly</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/patterns/bokeh.jpg" alt="Bokeh pattern"><br><b>Bokeh</b><br><sub>Out-of-focus lights rising and fading</sub></td>
+    <td align="center"><img src="docs/screenshots/patterns/snow.jpg" alt="Snow pattern"><br><b>Snow</b><br><sub>Flakes at several depths, swaying in the wind</sub></td>
+    <td align="center"><img src="docs/screenshots/patterns/rain.jpg" alt="Rain pattern"><br><b>Rain</b><br><sub>Fine slanted streaks, the near drops faster</sub></td>
   </tr>
 </table>
 
@@ -36,10 +73,9 @@ on your desktop every one of them moves.
 
 <img src="docs/screenshots/prefs.png" align="right" width="340" alt="The Patterns page of the settings">
 
-- **Twelve patterns, in any combination.** Nebula, Aurora, Contours, Starfield,
-  Wave, Constellation, Sparkles, Embers, Fireflies, Bokeh, Snow and Rain. Each
-  one has its own brightness and speed, and most let you set how much of it
-  there is.
+- **Stack any patterns and tune each one.** Every pattern has its own brightness
+  and speed, and most let you set how much of it there is. Overall speed and
+  opacity apply on top.
 - **Any base.** Use your own wallpaper, a gradient in GNOME's accent colour, one
   of eight palettes, or any picture.
 - **It shows up wherever your wallpaper does.** That includes the overview, the
