@@ -1,3 +1,4 @@
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 // A scene is a look: which patterns, tuned how, over what. It is nothing but
@@ -105,15 +106,22 @@ function canonical(key, variant) {
     return JSON.stringify(key === 'enabled-effects' ? [...value].sort() : sort(value));
 }
 
-/** Writes a scene's values, as one change. */
+/**
+ * Writes a scene's values, as one change.
+ *
+ * Through a settings object of its own: delay() has no way back, so on the
+ * shared one every later edit in the window would sit unapplied, shown in the
+ * rows but never reaching the shell.
+ */
 export function applyScene(settings, scene) {
     const values = variants(settings, scene);
-    settings.delay();
+    const batch = new Gio.Settings({ settings_schema: settings.settings_schema, backend: settings.backend });
+    batch.delay();
     for (const key of SCENE_KEYS) {
-        if (values[key]) settings.set_value(key, values[key]);
-        else if (key !== 'custom-image') settings.reset(key);
+        if (values[key]) batch.set_value(key, values[key]);
+        else if (key !== 'custom-image') batch.reset(key);
     }
-    settings.apply();
+    batch.apply();
 }
 
 /** Whether the settings are showing this scene right now. */
